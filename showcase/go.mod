@@ -42,3 +42,5 @@ require (
 	golang.org/x/time v0.15.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260316180232-0b37fe3546d5 // indirect
 )
+
+replace github.com/googleapis/gapic-showcase => ./gen/github.com/googleapis/gapic-showcase
