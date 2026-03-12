@@ -7,6 +7,9 @@ func (c *fooGRPCClient) ServerThings(ctx context.Context, req *mypackagepb.Input
 		ctx = metadata.AppendToOutgoingContext(ctx, "gcp.resource.name", fmt.Sprintf("//foo.googleapis.com/%v", req.GetOther()))
 	}
 	opts = append((*c.CallOptions).ServerThings[0:len((*c.CallOptions).ServerThings):len((*c.CallOptions).ServerThings)], opts...)
+	if gax.IsFeatureEnabled("LOGGING") {
+		ctx = callctx.WithLoggerContext(ctx, c.logger)
+	}
 	var resp mypackagepb.Foo_ServerThingsClient
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error

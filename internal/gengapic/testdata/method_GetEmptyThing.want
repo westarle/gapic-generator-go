@@ -10,6 +10,9 @@ func (c *fooGRPCClient) GetEmptyThing(ctx context.Context, req *mypackagepb.Inpu
 		req.RequestId = proto.String(uuid.NewString())
 	}
 	opts = append((*c.CallOptions).GetEmptyThing[0:len((*c.CallOptions).GetEmptyThing):len((*c.CallOptions).GetEmptyThing)], opts...)
+	if gax.IsFeatureEnabled("LOGGING") {
+		ctx = callctx.WithLoggerContext(ctx, c.logger)
+	}
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
 		_, err = executeRPC(ctx, c.fooClient.GetEmptyThing, req, settings.GRPC, c.logger, "GetEmptyThing")

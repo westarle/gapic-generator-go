@@ -678,7 +678,14 @@ func (g *generator) lookupField(msgName, field string) *descriptorpb.FieldDescri
 }
 
 func (g *generator) appendCallOpts(m *descriptorpb.MethodDescriptorProto) {
-	g.printf("opts = append(%[1]s[0:len(%[1]s):len(%[1]s)], opts...)", "(*c.CallOptions)."+*m.Name)
+	g.printf("  opts = append((*c.CallOptions).%s[0:len((*c.CallOptions).%s):len((*c.CallOptions).%s)], opts...)", m.GetName(), m.GetName(), m.GetName())
+}
+
+func (g *generator) insertLogger() {
+	g.printf("  if gax.IsFeatureEnabled(\"LOGGING\") {")
+	g.printf("    ctx = callctx.WithLoggerContext(ctx, c.logger)")
+	g.printf("  }")
+	g.imports[pbinfo.ImportSpec{Path: "github.com/googleapis/gax-go/v2/callctx"}] = true
 }
 
 // This is a helper function that checks whether a description contains a Deprecated header.

@@ -676,6 +676,7 @@ func (g *generator) serverStreamRESTCall(servName string, s *descriptorpb.Servic
 		g.imports[pbinfo.ImportSpec{Path: "google.golang.org/grpc/metadata"}] = true
 	}
 	p("var streamClient *%s", streamClient)
+	g.insertLogger()
 	p("e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
 	p(`  if settings.Path != "" {`)
 	p("    baseUrl.Path = settings.Path")
@@ -845,9 +846,9 @@ func (g *generator) pagingRESTCall(servName string, m *descriptorpb.MethodDescri
 
 	g.generateBaseURL(info, `return nil, "", err`)
 	g.generateQueryString(m)
-	p("  // Build HTTP headers from client and context metadata.")
 	p(`  hds := append(c.xGoogHeaders, "Content-Type", "application/json")`)
 	p(`  headers := gax.BuildHeaders(ctx, hds...)`)
+	g.insertLogger()
 	p("  e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
 	p(`    if settings.Path != "" {`)
 	p("      baseUrl.Path = settings.Path")
@@ -965,6 +966,7 @@ func (g *generator) lroRESTCall(servName string, m *descriptorpb.MethodDescripto
 	}
 	p("unm := protojson.UnmarshalOptions{AllowPartial: true, DiscardUnknown: true}")
 	p("resp := &%s.%s{}", outSpec.Name, outType.GetName())
+	g.insertLogger()
 	p("e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
 	p(`  if settings.Path != "" {`)
 	p("    baseUrl.Path = settings.Path")
@@ -1065,6 +1067,7 @@ func (g *generator) emptyUnaryRESTCall(servName string, m *descriptorpb.MethodDe
 		p("}")
 		g.imports[pbinfo.ImportSpec{Path: "google.golang.org/grpc/metadata"}] = true
 	}
+	g.insertLogger()
 	p("return gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
 	p(`  if settings.Path != "" {`)
 	p("    baseUrl.Path = settings.Path")
@@ -1164,9 +1167,15 @@ func (g *generator) unaryRESTCall(servName string, m *descriptorpb.MethodDescrip
 	if !isHTTPBodyMessage {
 		p("unm := protojson.UnmarshalOptions{AllowPartial: true, DiscardUnknown: true}")
 		g.imports[pbinfo.ImportSpec{Path: "google.golang.org/protobuf/encoding/protojson"}] = true
-
+	}
+	if info != nil && (g.featureEnabled(OpenTelemetryTracingFeature) || g.featureEnabled(OpenTelemetryLoggingFeature)) {
+		p("if gax.IsFeatureEnabled(\"TRACING\") || gax.IsFeatureEnabled(\"LOGGING\") {")
+		p("  ctx = metadata.AppendToOutgoingContext(ctx, \"url.template\", %q)", info.url)
+		p("}")
+		g.imports[pbinfo.ImportSpec{Path: "google.golang.org/grpc/metadata"}] = true
 	}
 	p("resp := &%s.%s{}", outSpec.Name, outType.GetName())
+	g.insertLogger()
 	p("e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
 	p(`  if settings.Path != "" {`)
 	p("    baseUrl.Path = settings.Path")

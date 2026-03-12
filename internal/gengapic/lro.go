@@ -46,6 +46,7 @@ func (g *generator) lroCall(servName string, m *descriptorpb.MethodDescriptorPro
 	g.insertRequestHeaders(m, grpc)
 	g.initializeAutoPopulatedFields(servName, m)
 	g.appendCallOpts(m)
+	g.insertLogger()
 
 	p("  var resp *%s.%s", outSpec.Name, outType.GetName())
 	p("  err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")

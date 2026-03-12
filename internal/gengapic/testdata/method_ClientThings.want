@@ -2,6 +2,9 @@ func (c *fooGRPCClient) ClientThings(ctx context.Context, opts ...gax.CallOption
 	ctx = gax.InsertMetadataIntoOutgoingContext(ctx, c.xGoogHeaders...)
 	var resp mypackagepb.Foo_ClientThingsClient
 	opts = append((*c.CallOptions).ClientThings[0:len((*c.CallOptions).ClientThings):len((*c.CallOptions).ClientThings)], opts...)
+	if gax.IsFeatureEnabled("LOGGING") {
+		ctx = callctx.WithLoggerContext(ctx, c.logger)
+	}
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
 		c.logger.DebugContext(ctx, "api streaming client request", "serviceName", serviceName, "rpcName", "ClientThings")

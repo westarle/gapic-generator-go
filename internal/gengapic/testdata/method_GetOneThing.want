@@ -13,6 +13,9 @@ func (c *fooGRPCClient) GetOneThing(ctx context.Context, req *mypackagepb.InputT
 		req.NonProto3optionalRequestId = uuid.NewString()
 	}
 	opts = append((*c.CallOptions).GetOneThing[0:len((*c.CallOptions).GetOneThing):len((*c.CallOptions).GetOneThing)], opts...)
+	if gax.IsFeatureEnabled("LOGGING") {
+		ctx = callctx.WithLoggerContext(ctx, c.logger)
+	}
 	var resp *mypackagepb.OutputType
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error

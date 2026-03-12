@@ -4,6 +4,9 @@ func (c *fooGRPCClient) EmptyLRO(ctx context.Context, req *mypackagepb.InputType
 		req.RequestId = proto.String(uuid.NewString())
 	}
 	opts = append((*c.CallOptions).EmptyLRO[0:len((*c.CallOptions).EmptyLRO):len((*c.CallOptions).EmptyLRO)], opts...)
+	if gax.IsFeatureEnabled("LOGGING") {
+		ctx = callctx.WithLoggerContext(ctx, c.logger)
+	}
 	var resp *longrunningpb.Operation
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error

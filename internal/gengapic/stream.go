@@ -40,6 +40,7 @@ func (g *generator) noRequestStreamCall(servName string, s *descriptorpb.Service
 	p("  var resp %s", retTyp)
 
 	g.appendCallOpts(m)
+	g.insertLogger()
 
 	p("  err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
 	p("    var err error")
@@ -81,8 +82,9 @@ func (g *generator) serverStreamCall(servName string, s *descriptorpb.ServiceDes
 
 	g.insertRequestHeaders(m, grpc)
 	g.appendCallOpts(m)
+	g.insertLogger()
 
-	p("  var resp %s", retTyp)
+	p("var resp %s", retTyp)
 	p("err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
 	p("  var err error")
 	p(`  c.logger.DebugContext(ctx, "api streaming client request", "serviceName", serviceName, "rpcName", %q)`, m.GetName())

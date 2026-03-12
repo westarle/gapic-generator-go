@@ -33,6 +33,9 @@ func (c *fooRESTClient) ServerStreamRPC(ctx context.Context, req *foopb.Foo, opt
 		ctx = metadata.AppendToOutgoingContext(ctx, "url.template", "/v1/foo")
 	}
 	var streamClient *serverStreamRPCRESTStreamClient
+	if gax.IsFeatureEnabled("LOGGING") {
+		ctx = callctx.WithLoggerContext(ctx, c.logger)
+	}
 	e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		if settings.Path != "" {
 			baseUrl.Path = settings.Path

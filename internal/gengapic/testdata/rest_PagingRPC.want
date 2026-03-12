@@ -28,9 +28,11 @@ func (c *fooRESTClient) PagingRPC(ctx context.Context, req *foopb.PagedFooReques
 
 		baseUrl.RawQuery = params.Encode()
 
-		// Build HTTP headers from client and context metadata.
 		hds := append(c.xGoogHeaders, "Content-Type", "application/json")
 		headers := gax.BuildHeaders(ctx, hds...)
+		if gax.IsFeatureEnabled("LOGGING") {
+			ctx = callctx.WithLoggerContext(ctx, c.logger)
+		}
 		e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 			if settings.Path != "" {
 				baseUrl.Path = settings.Path

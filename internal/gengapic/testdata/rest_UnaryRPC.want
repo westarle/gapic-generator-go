@@ -42,7 +42,13 @@ func (c *fooRESTClient) UnaryRPC(ctx context.Context, req *foopb.Foo, opts ...ga
 	}
 	opts = append((*c.CallOptions).UnaryRPC[0:len((*c.CallOptions).UnaryRPC):len((*c.CallOptions).UnaryRPC)], opts...)
 	unm := protojson.UnmarshalOptions{AllowPartial: true, DiscardUnknown: true}
+	if gax.IsFeatureEnabled("TRACING") || gax.IsFeatureEnabled("LOGGING") {
+		ctx = metadata.AppendToOutgoingContext(ctx, "url.template", "/v1/foo")
+	}
 	resp := &foopb.Foo{}
+	if gax.IsFeatureEnabled("LOGGING") {
+		ctx = callctx.WithLoggerContext(ctx, c.logger)
+	}
 	e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		if settings.Path != "" {
 			baseUrl.Path = settings.Path

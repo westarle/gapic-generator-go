@@ -106,6 +106,7 @@ func (g *generator) unaryGRPCCall(servName string, m *descriptorpb.MethodDescrip
 	g.insertRequestHeaders(m, grpc)
 	g.initializeAutoPopulatedFields(servName, m)
 	g.appendCallOpts(m)
+	g.insertLogger()
 
 	p("var resp *%s", retTyp)
 	p("err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
@@ -145,6 +146,7 @@ func (g *generator) emptyUnaryGRPCCall(servName string, m *descriptorpb.MethodDe
 	g.insertRequestHeaders(m, grpc)
 	g.initializeAutoPopulatedFields(servName, m)
 	g.appendCallOpts(m)
+	g.insertLogger()
 	p("err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
 	p("  var err error")
 	p("  _, err = %s", g.grpcStubCall(m))

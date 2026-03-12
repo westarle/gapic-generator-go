@@ -33,7 +33,13 @@ func (c *fooRESTClient) HttpBodyRPC(ctx context.Context, req *foopb.Foo, opts ..
 		ctx = metadata.AppendToOutgoingContext(ctx, "url.template", "/v1/foo")
 	}
 	opts = append((*c.CallOptions).HttpBodyRPC[0:len((*c.CallOptions).HttpBodyRPC):len((*c.CallOptions).HttpBodyRPC)], opts...)
+	if gax.IsFeatureEnabled("TRACING") || gax.IsFeatureEnabled("LOGGING") {
+		ctx = metadata.AppendToOutgoingContext(ctx, "url.template", "/v1/foo")
+	}
 	resp := &httpbodypb.HttpBody{}
+	if gax.IsFeatureEnabled("LOGGING") {
+		ctx = callctx.WithLoggerContext(ctx, c.logger)
+	}
 	e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		if settings.Path != "" {
 			baseUrl.Path = settings.Path

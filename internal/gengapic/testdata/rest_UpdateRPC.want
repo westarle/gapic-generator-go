@@ -44,7 +44,13 @@ func (c *fooRESTClient) UpdateRPC(ctx context.Context, req *foopb.UpdateRequest,
 	}
 	opts = append((*c.CallOptions).UpdateRPC[0:len((*c.CallOptions).UpdateRPC):len((*c.CallOptions).UpdateRPC)], opts...)
 	unm := protojson.UnmarshalOptions{AllowPartial: true, DiscardUnknown: true}
+	if gax.IsFeatureEnabled("TRACING") || gax.IsFeatureEnabled("LOGGING") {
+		ctx = metadata.AppendToOutgoingContext(ctx, "url.template", "/v1/foo")
+	}
 	resp := &foopb.Foo{}
+	if gax.IsFeatureEnabled("LOGGING") {
+		ctx = callctx.WithLoggerContext(ctx, c.logger)
+	}
 	e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		if settings.Path != "" {
 			baseUrl.Path = settings.Path

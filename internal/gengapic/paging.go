@@ -382,6 +382,7 @@ func (g *generator) pagingCall(servName string, m *descriptorpb.MethodDescriptor
 	p("req = proto.Clone(req).(*%s.%s)", inSpec.Name, inType.GetName())
 	p("it.InternalFetch = func(pageSize int, pageToken string) ([]%s, string, error) {", pt.elemTypeName)
 	g.internalFetchSetup(outType, outSpec, pageSize, tok)
+	g.insertLogger()
 	p("  err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
 	p("    var err error")
 	p("    resp, err = %s", g.grpcStubCall(m))
