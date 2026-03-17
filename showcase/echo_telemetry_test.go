@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
-
-	"github.com/googleapis/gax-go/v2/callctx"
 
 	"github.com/googleapis/gapic-showcase/client"
 	showcasepb "github.com/googleapis/gapic-showcase/server/genproto"
@@ -28,7 +27,6 @@ func TestTelemetryOutput(t *testing.T) {
 	slog.SetDefault(logger)
 
 	ctx := context.Background()
-	ctx = callctx.WithLoggerContext(ctx, logger)
 
 	// Connect to local showcase server
 	opts := []option.ClientOption{
@@ -51,10 +49,6 @@ func TestTelemetryOutput(t *testing.T) {
 			"key1": "value1",
 		},
 	})
-	ei2, _ := anypb.New(&errdetails.ErrorInfo{
-		Reason: "PROJECT_SUSPENDED",
-		Domain: "example.com",
-	})
 
 	// Call Echo configured to fail
 	_, err = c.Echo(ctx, &showcasepb.EchoRequest{
@@ -62,7 +56,7 @@ func TestTelemetryOutput(t *testing.T) {
 			Error: &status.Status{
 				Code:    int32(codes.InvalidArgument),
 				Message: "fail this on purpose",
-				Details: []*anypb.Any{ei1, ei2},
+				Details: []*anypb.Any{ei1},
 			},
 		},
 	})
@@ -72,7 +66,7 @@ func TestTelemetryOutput(t *testing.T) {
 
 	st, ok := grpcstatus.FromError(err)
 	if !ok {
-		t.Fatalf("Expected gRPC status error")
+		t.Fatalf("Expected gRPC status error, got: %v", err)
 	}
 	t.Logf("Got expected error: %v", st.Code())
 
@@ -83,5 +77,18 @@ func TestTelemetryOutput(t *testing.T) {
 	t.Logf("Logger output:\n%s", output)
 	if output == "" {
 		t.Fatalf("Expected telemetry logs, got none")
+	}
+
+	if !strings.Contains(output, `"rpc.system.name":"grpc"`) {
+		t.Errorf("Expected rpc.system.name in log output")
+	}
+	if !strings.Contains(output, `"error.type":"CREDENTIALS_MISSING"`) {
+		t.Errorf("Expected error.type: CREDENTIALS_MISSING in log output")
+	}
+	if !strings.Contains(output, `"gcp.errors.domain":"example.com"`) {
+		t.Errorf("Expected gcp.errors.domain in log output")
+	}
+	if !strings.Contains(output, `"gcp.errors.metadata.key1":"value1"`) {
+		t.Errorf("Expected gcp.errors.metadata.key1 in log output")
 	}
 }
