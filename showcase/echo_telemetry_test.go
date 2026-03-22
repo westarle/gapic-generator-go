@@ -82,6 +82,9 @@ func TestTelemetryOutput(t *testing.T) {
 	if !strings.Contains(output, `"rpc.system.name":"grpc"`) {
 		t.Errorf("Expected rpc.system.name in log output")
 	}
+	if !strings.Contains(output, `"level":"DEBUG"`) {
+		t.Errorf("Expected log level to be DEBUG")
+	}
 	if !strings.Contains(output, `"error.type":"CREDENTIALS_MISSING"`) {
 		t.Errorf("Expected error.type: CREDENTIALS_MISSING in log output")
 	}
