@@ -51,6 +51,7 @@ protoc \
 	--go_gapic_out ./gen \
 	--go_gapic_opt 'transport=rest+grpc' \
 	--go_gapic_opt 'rest-numeric-enums' \
+	--go_gapic_opt 'F_open_telemetry_metrics' \
 	--go_gapic_opt 'go-gapic-package=github.com/googleapis/gapic-showcase/client;client' \
 	--go_gapic_opt 'grpc-service-config=showcase_grpc_service_config.json' \
 	--go_gapic_opt 'api-service-config=showcase_v1beta1.yaml' \
@@ -92,5 +93,5 @@ cleanup() {
 }
 trap cleanup EXIT
 
-go test -mod=mod -count=1 ./...
+go test -count=1 ./...
 exit_code=$?

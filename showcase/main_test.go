@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	_ "cloud.google.com/go"
+	"github.com/googleapis/gax-go/v2"
 	showcase "github.com/googleapis/gapic-showcase/client"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
@@ -29,6 +30,9 @@ import (
 )
 
 func init() {
+	os.Setenv("GOOGLE_SDK_GO_EXPERIMENTAL_METRICS", "true")
+	gax.TestOnlyResetIsFeatureEnabled()
+
 	// These "leaks" are created by the client connection not being closed at the
 	// end of an individual test. This is not an issue for us, because the client
 	// connection is shared across tests and closed by the TestMain. We are more
