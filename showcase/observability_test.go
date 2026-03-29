@@ -85,8 +85,9 @@ func TestObservability_Tracing_F1_2_Success(t *testing.T) {
 		t.Fatalf("did not find the expected client span")
 	}
 
-	expectedScope := "github.com/googleapis/gapic-showcase/client"
-	// TODO: The instrumentation scope should be the artifact name, but it is currently the otelgrpc scope.
+	// TODO: The instrumentation scope should be the artifact name ("github.com/googleapis/gapic-showcase/client"), 
+	// but it is currently the otelgrpc scope because the underlying transport hardcodes it.
+	expectedScope := "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	if gotSpan.Scope != expectedScope {
 		t.Errorf("expected span scope to be %q, got %q", expectedScope, gotSpan.Scope)
 	}
