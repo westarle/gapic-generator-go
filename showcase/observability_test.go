@@ -86,20 +86,27 @@ func TestObservability_Tracing_F1_2_Success(t *testing.T) {
 	}
 
 	wantAttrs := map[string]any{
-		"gcp.client.artifact": "github.com/googleapis/gapic-showcase/client",
-		"gcp.client.language": "go",
-		"gcp.client.repo":     "googleapis/google-cloud-go",
-		"gcp.client.service":  "showcase",
+		"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
+		"gcp.client.language":      "go",
+		"gcp.client.repo":          "googleapis/google-cloud-go",
+		"gcp.client.service":       "showcase",
+		"gcp.client.version":       "DYNAMIC",
+		"gcp.grpc.resend_count":    int64(0),
+		"rpc.grpc.status_code":     int64(0),
+		"rpc.method":               "Echo",
+		"rpc.response.status_code": "OK",
+		"rpc.service":              "google.showcase.v1beta1.Echo",
+		"rpc.system":               "grpc",
+		"server.address":           "127.0.0.1",
+		"server.port":              int64(7469),
+		"url.domain":               "showcase.googleapis.com",
 	}
 
-	filteredGotAttrs := make(map[string]any)
-	for key, val := range gotSpan.Attributes {
-		if _, ok := wantAttrs[key]; ok {
-			filteredGotAttrs[key] = val
-		}
+	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
+		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
 	}
 
-	if diff := cmp.Diff(wantAttrs, filteredGotAttrs); diff != "" {
+	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
 		t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
 	}
 }
