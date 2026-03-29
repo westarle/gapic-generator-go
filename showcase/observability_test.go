@@ -8,6 +8,7 @@ import (
 
 	showcase "github.com/googleapis/gapic-showcase/client"
 	showcasepb "github.com/googleapis/gapic-showcase/server/genproto"
+	gax "github.com/googleapis/gax-go/v2"
 	"go.opentelemetry.io/otel"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
@@ -16,6 +17,10 @@ import (
 )
 
 func TestObservability_Tracing_F1_2_Success(t *testing.T) {
+	// Reset feature cache just in case something else evaluated it
+	gax.TestOnlyResetIsFeatureEnabled()
+	defer gax.TestOnlyResetIsFeatureEnabled()
+	
 	// F1.2: Assert T4 spans emitted properly on success.
 	os.Setenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING", "true")
 	defer os.Unsetenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING")
@@ -65,6 +70,7 @@ func TestObservability_Tracing_F1_2_Success(t *testing.T) {
 	}
 
 	var clientSpanFound bool
+	var artifactAttrFound bool
 	for _, req := range requests {
 		for _, rs := range req.ResourceSpans {
 			for _, ss := range rs.ScopeSpans {
@@ -72,6 +78,16 @@ func TestObservability_Tracing_F1_2_Success(t *testing.T) {
 					if s.Name == "google.showcase.v1beta1.Echo/Echo" {
 						clientSpanFound = true
 						t.Logf("Found client span: %v", s.Name)
+						for _, kv := range s.Attributes {
+							t.Logf("Span attribute: %q = %v", kv.Key, kv.Value.GetStringValue())
+							if kv.Key == "gcp.client.artifact" {
+								artifactAttrFound = true
+								expectedArtifact := "github.com/googleapis/gapic-showcase/client"
+								if kv.Value.GetStringValue() != expectedArtifact {
+									t.Errorf("expected gcp.client.artifact to be %q, got %q", expectedArtifact, kv.Value.GetStringValue())
+								}
+							}
+						}
 					}
 				}
 			}
@@ -80,5 +96,8 @@ func TestObservability_Tracing_F1_2_Success(t *testing.T) {
 
 	if !clientSpanFound {
 		t.Errorf("did not find the expected client span")
+	}
+	if !artifactAttrFound {
+		t.Errorf("did not find the gcp.client.artifact attribute in the client span")
 	}
 }
