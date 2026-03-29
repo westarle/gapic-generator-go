@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/detectors/gcp"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -132,7 +131,6 @@ func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(res),
 	)
-	otel.SetTracerProvider(tp)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
