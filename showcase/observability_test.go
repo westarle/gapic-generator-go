@@ -85,17 +85,28 @@ func TestObservability_Tracing_F1_2_Success(t *testing.T) {
 		t.Fatalf("did not find the expected client span")
 	}
 
+	expectedScope := "github.com/googleapis/gapic-showcase/client"
+	// TODO: The instrumentation scope should be the artifact name, but it is currently the otelgrpc scope.
+	if gotSpan.Scope != expectedScope {
+		t.Errorf("expected span scope to be %q, got %q", expectedScope, gotSpan.Scope)
+	}
+
 	wantAttrs := map[string]any{
 		"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
+		// TODO: gcp.client.language is [removed] from requirements (present in telemetry.sdk.language).
 		"gcp.client.language":      "go",
 		"gcp.client.repo":          "googleapis/google-cloud-go",
 		"gcp.client.service":       "showcase",
 		"gcp.client.version":       "DYNAMIC",
 		"gcp.grpc.resend_count":    int64(0),
+		// TODO: rpc.grpc.status_code is [deleted] in OTel SemConv 1.39 (use rpc.response.status_code).
 		"rpc.grpc.status_code":     int64(0),
+		// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
 		"rpc.method":               "Echo",
 		"rpc.response.status_code": "OK",
+		// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
 		"rpc.service":              "google.showcase.v1beta1.Echo",
+		// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
 		"rpc.system":               "grpc",
 		"server.address":           "127.0.0.1",
 		"server.port":              int64(7469),
