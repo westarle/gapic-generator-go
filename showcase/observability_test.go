@@ -17,6 +17,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func setupTracingTest(t *testing.T, enableTracing bool) (*observabilityFixture, []option.ClientOption) {
@@ -176,8 +177,112 @@ func TestObservability_Tracing_Failure(t *testing.T) {
 		t.Fatalf("did not find the expected client span")
 	}
 
-	if statusAttr, ok := gotSpan.Attributes["rpc.grpc.status_code"]; !ok || statusAttr != int64(codes.NotFound) {
-		t.Errorf("expected rpc.grpc.status_code=%d, got %v", codes.NotFound, statusAttr)
+	wantAttrs := map[string]any{
+		"error.type":               "NOT_FOUND",
+		"exception.type":           "*status.Error",
+		"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
+		"gcp.client.language":      "go",
+		"gcp.client.repo":          "googleapis/google-cloud-go",
+		"gcp.client.service":       "showcase",
+		"gcp.client.version":       "DYNAMIC",
+		"gcp.grpc.resend_count":    int64(0),
+		"rpc.grpc.status_code":     int64(codes.NotFound),
+		"rpc.method":               "Echo",
+		"rpc.service":              "google.showcase.v1beta1.Echo",
+		"rpc.system":               "grpc",
+		"server.address":           "127.0.0.1",
+		"server.port":              int64(7469),
+		"status.message":           "not found",
+		"url.domain":               "showcase.googleapis.com",
+	}
+
+	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
+		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
+	}
+	
+	// Temporarily ignore rpc.response.status_code in failure tests until we see what otelgrpc emits
+	delete(gotSpan.Attributes, "rpc.response.status_code")
+
+	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
+		t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestObservability_Tracing_ClientFailure(t *testing.T) {
+	fix, clientOpts := setupTracingTest(t, true)
+	ctx := context.Background()
+	echoClient, err := showcase.NewEchoClient(ctx, clientOpts...)
+	if err != nil {
+		t.Fatalf("failed to create echo client: %v", err)
+	}
+	t.Cleanup(func() { echoClient.Close() })
+
+	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
+
+	// Force a client-side deadline exceeded error
+	timeoutCtx, cancelTimeout := context.WithTimeout(ctx, 1*time.Millisecond)
+	defer cancelTimeout()
+
+	_, err = echoClient.Block(timeoutCtx, &showcasepb.BlockRequest{
+		ResponseDelay: &durationpb.Duration{Seconds: 1},
+		Response: &showcasepb.BlockRequest_Success{
+			Success: &showcasepb.BlockResponse{Content: "hello"},
+		},
+	})
+	if err == nil {
+		t.Fatalf("Expected error, got nil")
+	}
+	span.End()
+
+	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := fix.provider.ForceFlush(ctxFlush); err != nil {
+		t.Fatalf("failed to flush provider: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	spans := fix.traceServer.GetCapturedSpans()
+	var gotSpan *CapturedSpan
+	for _, s := range spans {
+		if s.Name == "google.showcase.v1beta1.Echo/Block" {
+			gotSpan = &s
+			break
+		}
+	}
+
+	if gotSpan == nil {
+		t.Fatalf("did not find the expected client span")
+	}
+
+	wantAttrs := map[string]any{
+		"error.type":               "CLIENT_TIMEOUT",
+		"exception.type":           "*status.Error",
+		"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
+		"gcp.client.language":      "go",
+		"gcp.client.repo":          "googleapis/google-cloud-go",
+		"gcp.client.service":       "showcase",
+		"gcp.client.version":       "DYNAMIC",
+		"gcp.grpc.resend_count":    int64(0),
+		"rpc.grpc.status_code":     int64(codes.DeadlineExceeded),
+		"rpc.method":               "Block",
+		"rpc.service":              "google.showcase.v1beta1.Echo",
+		"rpc.system":               "grpc",
+		"server.address":           "127.0.0.1",
+		"server.port":              int64(7469),
+		"status.message":           "context deadline exceeded",
+		"url.domain":               "showcase.googleapis.com",
+	}
+
+	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
+		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
+	}
+	
+	// Temporarily ignore rpc.response.status_code in failure tests until we see what otelgrpc emits
+	delete(gotSpan.Attributes, "rpc.response.status_code")
+
+	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
+		t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
 	}
 }
 
