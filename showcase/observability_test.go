@@ -14,15 +14,21 @@ import (
 	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 )
 
-func setupTracingTest(t *testing.T) (*showcase.EchoClient, *observabilityFixture) {
+func setupTracingTest(t *testing.T, enableTracing bool) (*observabilityFixture, []option.ClientOption) {
 	// Reset feature cache just in case something else evaluated it
 	gax.TestOnlyResetIsFeatureEnabled()
 	t.Cleanup(gax.TestOnlyResetIsFeatureEnabled)
 	
-	os.Setenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING", "true")
+	if enableTracing {
+		os.Setenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING", "true")
+	} else {
+		os.Setenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING", "false")
+	}
 	t.Cleanup(func() { os.Unsetenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING") })
 
 	fix := setupObservabilityFixture(t)
@@ -37,23 +43,22 @@ func setupTracingTest(t *testing.T) (*showcase.EchoClient, *observabilityFixture
 		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
 	}
 
+	return fix, grpcClientOpts
+}
+
+func TestObservability_Tracing_Success(t *testing.T) {
+	fix, clientOpts := setupTracingTest(t, true)
 	ctx := context.Background()
-	echoClient, err := showcase.NewEchoClient(ctx, grpcClientOpts...)
+	echoClient, err := showcase.NewEchoClient(ctx, clientOpts...)
 	if err != nil {
 		t.Fatalf("failed to create echo client: %v", err)
 	}
 	t.Cleanup(func() { echoClient.Close() })
 
-	return echoClient, fix
-}
-
-func TestObservability_Tracing_Success(t *testing.T) {
-	echoClient, fix := setupTracingTest(t)
-
 	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
 
 	// Call an RPC that succeeds
-	_, err := echoClient.Echo(ctx, &showcasepb.EchoRequest{
+	_, err = echoClient.Echo(ctx, &showcasepb.EchoRequest{
 		Response: &showcasepb.EchoRequest_Content{
 			Content: "hello",
 		},
@@ -125,5 +130,160 @@ func TestObservability_Tracing_Success(t *testing.T) {
 
 	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
 		t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
+	}
+}
+
+func TestObservability_Tracing_Failure(t *testing.T) {
+	fix, clientOpts := setupTracingTest(t, true)
+	ctx := context.Background()
+	echoClient, err := showcase.NewEchoClient(ctx, clientOpts...)
+	if err != nil {
+		t.Fatalf("failed to create echo client: %v", err)
+	}
+	t.Cleanup(func() { echoClient.Close() })
+
+	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
+
+	// Call an RPC that fails
+	_, err = echoClient.Echo(ctx, &showcasepb.EchoRequest{
+		Response: &showcasepb.EchoRequest_Error{
+			Error: status.New(codes.NotFound, "not found").Proto(),
+		},
+	})
+	if err == nil {
+		t.Fatalf("Expected error, got nil")
+	}
+	span.End()
+
+	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := fix.provider.ForceFlush(ctxFlush); err != nil {
+		t.Fatalf("failed to flush provider: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	spans := fix.traceServer.GetCapturedSpans()
+	var gotSpan *CapturedSpan
+	for _, s := range spans {
+		if s.Name == "google.showcase.v1beta1.Echo/Echo" {
+			gotSpan = &s
+			break
+		}
+	}
+
+	if gotSpan == nil {
+		t.Fatalf("did not find the expected client span")
+	}
+
+	if statusAttr, ok := gotSpan.Attributes["rpc.grpc.status_code"]; !ok || statusAttr != int64(codes.NotFound) {
+		t.Errorf("expected rpc.grpc.status_code=%d, got %v", codes.NotFound, statusAttr)
+	}
+}
+
+func TestObservability_Tracing_Disablement(t *testing.T) {
+	fix, clientOpts := setupTracingTest(t, false)
+	ctx := context.Background()
+	echoClient, err := showcase.NewEchoClient(ctx, clientOpts...)
+	if err != nil {
+		t.Fatalf("failed to create echo client: %v", err)
+	}
+	t.Cleanup(func() { echoClient.Close() })
+
+	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
+
+	_, err = echoClient.Echo(ctx, &showcasepb.EchoRequest{
+		Response: &showcasepb.EchoRequest_Content{
+			Content: "hello",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Echo RPC failed: %v", err)
+	}
+	span.End()
+
+	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := fix.provider.ForceFlush(ctxFlush); err != nil {
+		t.Fatalf("failed to flush provider: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	spans := fix.traceServer.GetCapturedSpans()
+	var gotSpan *CapturedSpan
+	for _, s := range spans {
+		if s.Name == "google.showcase.v1beta1.Echo/Echo" {
+			gotSpan = &s
+			break
+		}
+	}
+
+	if gotSpan != nil {
+		if _, ok := gotSpan.Attributes["gcp.client.artifact"]; ok {
+			t.Errorf("found gcp.client.artifact attribute, but tracing telemetry should be disabled")
+		}
+	}
+}
+
+func TestObservability_Tracing_Retry(t *testing.T) {
+	fix, clientOpts := setupTracingTest(t, true)
+	ctx := context.Background()
+
+	seqClient, err := showcase.NewSequenceClient(ctx, clientOpts...)
+	if err != nil {
+		t.Fatalf("failed to create sequence client: %v", err)
+	}
+	t.Cleanup(func() { seqClient.Close() })
+
+	responses := []*showcasepb.Sequence_Response{
+		{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
+		{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
+		{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
+		{Status: status.New(codes.OK, "OK").Proto()},
+	}
+
+	seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
+		Sequence: &showcasepb.Sequence{Responses: responses},
+	})
+	if err != nil {
+		t.Fatalf("CreateSequence failed: %v", err)
+	}
+
+	retryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	bo := gax.Backoff{
+		Initial:    10 * time.Millisecond,
+		Max:        100 * time.Millisecond,
+		Multiplier: 2.00,
+	}
+	retryOpt := gax.WithRetry(func() gax.Retryer {
+		return gax.OnCodes([]codes.Code{codes.Unavailable}, bo)
+	})
+
+	err = seqClient.AttemptSequence(retryCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, retryOpt)
+	if err != nil {
+		t.Fatalf("AttemptSequence failed: %v", err)
+	}
+
+	ctxFlush, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancelFlush()
+	if err := fix.provider.ForceFlush(ctxFlush); err != nil {
+		t.Fatalf("failed to flush provider: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	spans := fix.traceServer.GetCapturedSpans()
+	var attemptSpans []CapturedSpan
+	for _, s := range spans {
+		if s.Name == "google.showcase.v1beta1.SequenceService/AttemptSequence" {
+			attemptSpans = append(attemptSpans, s)
+		}
+	}
+
+	if len(attemptSpans) != 4 {
+		t.Errorf("expected 4 attempt spans (3 failures + 1 success), got %d", len(attemptSpans))
 	}
 }
