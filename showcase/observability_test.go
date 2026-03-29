@@ -17,18 +17,17 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func TestObservability_Tracing_F1_2_Success(t *testing.T) {
+func setupTracingTest(t *testing.T) (*showcase.EchoClient, *observabilityFixture) {
 	// Reset feature cache just in case something else evaluated it
 	gax.TestOnlyResetIsFeatureEnabled()
-	defer gax.TestOnlyResetIsFeatureEnabled()
+	t.Cleanup(gax.TestOnlyResetIsFeatureEnabled)
 	
-	// F1.2: Assert T4 spans emitted properly on success.
 	os.Setenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING", "true")
-	defer os.Unsetenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING")
+	t.Cleanup(func() { os.Unsetenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING") })
 
 	fix := setupObservabilityFixture(t)
 	oldTP := otel.GetTracerProvider()
-	defer otel.SetTracerProvider(oldTP)
+	t.Cleanup(func() { otel.SetTracerProvider(oldTP) })
 	otel.SetTracerProvider(fix.provider)
 
 	// Create a new client to ensure it picks up the OTel provider and env vars
@@ -43,12 +42,18 @@ func TestObservability_Tracing_F1_2_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create echo client: %v", err)
 	}
-	defer echoClient.Close()
+	t.Cleanup(func() { echoClient.Close() })
 
-	ctx, span := otel.Tracer("test-tracer").Start(ctx, "APP")
+	return echoClient, fix
+}
+
+func TestObservability_Tracing_Success(t *testing.T) {
+	echoClient, fix := setupTracingTest(t)
+
+	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
 
 	// Call an RPC that succeeds
-	_, err = echoClient.Echo(ctx, &showcasepb.EchoRequest{
+	_, err := echoClient.Echo(ctx, &showcasepb.EchoRequest{
 		Response: &showcasepb.EchoRequest_Content{
 			Content: "hello",
 		},
