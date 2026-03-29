@@ -27,6 +27,9 @@ func TestObservability_Tracing_F1_2_Success(t *testing.T) {
 	defer os.Unsetenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING")
 
 	fix := setupObservabilityFixture(t)
+	oldTP := otel.GetTracerProvider()
+	defer otel.SetTracerProvider(oldTP)
+	otel.SetTracerProvider(fix.provider)
 
 	// Create a new client to ensure it picks up the OTel provider and env vars
 	grpcClientOpts := []option.ClientOption{
