@@ -223,11 +223,24 @@ func TestObservability_Tracing_Failure(t *testing.T) {
 func TestObservability_Tracing_ClientFailure(t *testing.T) {
 	fix, clientOpts := setupTracingTest(t, true)
 	ctx := context.Background()
-	echoClient, err := showcase.NewEchoClient(ctx, clientOpts...)
+	seqClient, err := showcase.NewSequenceClient(ctx, clientOpts...)
 	if err != nil {
-		t.Fatalf("failed to create echo client: %v", err)
+		t.Fatalf("failed to create sequence client: %v", err)
 	}
-	t.Cleanup(func() { echoClient.Close() })
+	t.Cleanup(func() { seqClient.Close() })
+
+	responses := []*showcasepb.Sequence_Response{
+		{
+			Status: status.New(codes.OK, "OK").Proto(),
+			Delay:  durationpb.New(1 * time.Second),
+		},
+	}
+	seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
+		Sequence: &showcasepb.Sequence{Responses: responses},
+	})
+	if err != nil {
+		t.Fatalf("CreateSequence failed: %v", err)
+	}
 
 	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
 
@@ -235,12 +248,7 @@ func TestObservability_Tracing_ClientFailure(t *testing.T) {
 	timeoutCtx, cancelTimeout := context.WithTimeout(ctx, 1*time.Millisecond)
 	defer cancelTimeout()
 
-	_, err = echoClient.Block(timeoutCtx, &showcasepb.BlockRequest{
-		ResponseDelay: &durationpb.Duration{Seconds: 1},
-		Response: &showcasepb.BlockRequest_Success{
-			Success: &showcasepb.BlockResponse{Content: "hello"},
-		},
-	})
+	err = seqClient.AttemptSequence(timeoutCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
 	if err == nil {
 		t.Fatalf("Expected error, got nil")
 	}
@@ -257,7 +265,7 @@ func TestObservability_Tracing_ClientFailure(t *testing.T) {
 	spans := fix.traceServer.GetCapturedSpans()
 	var gotSpan *CapturedSpan
 	for _, s := range spans {
-		if s.Name == "google.showcase.v1beta1.Echo/Block" {
+		if s.Name == "google.showcase.v1beta1.SequenceService/AttemptSequence" {
 			gotSpan = &s
 			break
 		}
@@ -277,13 +285,15 @@ func TestObservability_Tracing_ClientFailure(t *testing.T) {
 		"gcp.client.service":       "showcase",
 		"gcp.client.version":       "DYNAMIC",
 		"gcp.grpc.resend_count":    int64(0),
+		// TODO: gcp.resource.destination.id should be populated from the resource_reference, but currently is not emitted by the generator.
+		// "gcp.resource.destination.id": seq.GetName(),
 		// TODO: rpc.grpc.status_code is [deleted] in OTel SemConv 1.39 (use rpc.response.status_code).
 		"rpc.grpc.status_code":     int64(codes.DeadlineExceeded),
 		// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
-		"rpc.method":               "Block",
+		"rpc.method":               "AttemptSequence",
 		"rpc.response.status_code": "DEADLINE_EXCEEDED",
 		// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
-		"rpc.service":              "google.showcase.v1beta1.Echo",
+		"rpc.service":              "google.showcase.v1beta1.SequenceService",
 		// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
 		"rpc.system":               "grpc",
 		"server.address":           "127.0.0.1",
