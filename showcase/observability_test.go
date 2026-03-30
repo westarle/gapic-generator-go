@@ -17,7 +17,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func setupTracingTest(t *testing.T) (*showcase.EchoClient, *observabilityFixture) {
+func setupTracingTest(t *testing.T) (*observabilityFixture, []option.ClientOption, []option.ClientOption) {
 	// Reset feature cache just in case something else evaluated it
 	gax.TestOnlyResetIsFeatureEnabled()
 	t.Cleanup(gax.TestOnlyResetIsFeatureEnabled)
@@ -37,21 +37,15 @@ func setupTracingTest(t *testing.T) (*showcase.EchoClient, *observabilityFixture
 		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
 	}
 
-	ctx := context.Background()
-	echoClient, err := showcase.NewEchoClient(ctx, grpcClientOpts...)
-	if err != nil {
-		t.Fatalf("failed to create echo client: %v", err)
+	restClientOpts := []option.ClientOption{
+		option.WithEndpoint("http://127.0.0.1:7469"),
+		option.WithTokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "dummy-token"})),
 	}
-	t.Cleanup(func() { echoClient.Close() })
 
-	return echoClient, fix
+	return fix, grpcClientOpts, restClientOpts
 }
 
-func TestObservability_Tracing_Success(t *testing.T) {
-	echoClient, fix := setupTracingTest(t)
-
-	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
-
+func runTracingSuccessScenario(ctx context.Context, t *testing.T, echoClient *showcase.EchoClient) {
 	// Call an RPC that succeeds
 	_, err := echoClient.Echo(ctx, &showcasepb.EchoRequest{
 		Response: &showcasepb.EchoRequest_Content{
@@ -61,69 +55,128 @@ func TestObservability_Tracing_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Echo RPC failed: %v", err)
 	}
-	span.End()
+}
 
-	// Force flush the provider to ensure traces are exported
-	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := fix.provider.ForceFlush(ctxFlush); err != nil {
-		t.Fatalf("failed to flush provider: %v", err)
+func TestObservability_Tracing_Success(t *testing.T) {
+	fix, grpcOpts, restOpts := setupTracingTest(t)
+	ctx := context.Background()
+
+	grpcClient, err := showcase.NewEchoClient(ctx, grpcOpts...)
+	if err != nil {
+		t.Fatalf("failed to create grpc echo client: %v", err)
+	}
+	t.Cleanup(func() { grpcClient.Close() })
+
+	restClient, err := showcase.NewEchoRESTClient(ctx, restOpts...)
+	if err != nil {
+		t.Fatalf("failed to create rest echo client: %v", err)
+	}
+	t.Cleanup(func() { restClient.Close() })
+
+	clients := map[string]*showcase.EchoClient{
+		"grpc": grpcClient,
+		"rest": restClient,
 	}
 
-	// Give a little time for the gRPC export to arrive
-	time.Sleep(100 * time.Millisecond)
+	for typ, echoClient := range clients {
+		t.Run(typ, func(t *testing.T) {
+			ctxSpan, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
 
-	spans := fix.traceServer.GetCapturedSpans()
-	if len(spans) == 0 {
-		t.Fatalf("expected to receive trace exports, got none")
-	}
+			runTracingSuccessScenario(ctxSpan, t, echoClient)
+			span.End()
 
-	var gotSpan *CapturedSpan
-	for _, s := range spans {
-		if s.Name == "google.showcase.v1beta1.Echo/Echo" {
-			gotSpan = &s
-			break
-		}
-	}
+			// Force flush the provider to ensure traces are exported
+			ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := fix.provider.ForceFlush(ctxFlush); err != nil {
+				t.Fatalf("failed to flush provider: %v", err)
+			}
 
-	if gotSpan == nil {
-		t.Fatalf("did not find the expected client span")
-	}
+			// Give a little time for the gRPC export to arrive
+			time.Sleep(100 * time.Millisecond)
 
-	// TODO: The instrumentation scope should be the artifact name ("github.com/googleapis/gapic-showcase/client"), 
-	// but it is currently the otelgrpc scope because the underlying transport hardcodes it.
-	expectedScope := "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
-	if gotSpan.Scope != expectedScope {
-		t.Errorf("expected span scope to be %q, got %q", expectedScope, gotSpan.Scope)
-	}
+			spans := fix.traceServer.GetCapturedSpans()
+			if len(spans) == 0 {
+				t.Fatalf("expected to receive trace exports, got none")
+			}
 
-	wantAttrs := map[string]any{
-		"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-		// TODO: gcp.client.language is [removed] from requirements (present in telemetry.sdk.language).
-		"gcp.client.language":      "go",
-		"gcp.client.repo":          "googleapis/google-cloud-go",
-		"gcp.client.service":       "showcase",
-		"gcp.client.version":       "DYNAMIC",
-		"gcp.grpc.resend_count":    int64(0),
-		// TODO: rpc.grpc.status_code is [deleted] in OTel SemConv 1.39 (use rpc.response.status_code).
-		"rpc.grpc.status_code":     int64(0),
-		// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
-		"rpc.method":               "Echo",
-		"rpc.response.status_code": "OK",
-		// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
-		"rpc.service":              "google.showcase.v1beta1.Echo",
-		// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
-		"rpc.system":               "grpc",
-		"server.address":           "127.0.0.1",
-		"server.port":              int64(7469),
-		"url.domain":               "showcase.googleapis.com",
-	}
+			expectedName := "google.showcase.v1beta1.Echo/Echo"
+			if typ == "rest" {
+				expectedName = "POST /v1beta1/echo:echo"
+			}
+			traceID := span.SpanContext().TraceID()
+			var gotSpan *CapturedSpan
+			for _, s := range spans {
+				if string(s.TraceID) == string(traceID[:]) && s.Name == expectedName {
+					gotSpan = &s
+					break
+				}
+			}
 
-	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
-		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
-	}
+			if gotSpan == nil {
+				var names []string
+				for _, s := range spans {
+					names = append(names, s.Name)
+				}
+				t.Fatalf("did not find the expected client span. Found spans: %v", names)
+			}
 
-	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
-		t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
+			// TODO: The instrumentation scope should be the artifact name ("github.com/googleapis/gapic-showcase/client"), 
+			// but it is currently the otelgrpc scope because the underlying transport hardcodes it.
+			expectedScope := "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
+			if typ == "rest" {
+				// the REST transport instrumentation uses otelhttp
+				expectedScope = "go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+			}
+			if gotSpan.Scope != expectedScope {
+				t.Errorf("expected span scope to be %q, got %q", expectedScope, gotSpan.Scope)
+			}
+
+			wantAttrs := map[string]any{
+				"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
+				// TODO: gcp.client.language is [removed] from requirements (present in telemetry.sdk.language).
+				"gcp.client.language":      "go",
+				"gcp.client.repo":          "googleapis/google-cloud-go",
+				"gcp.client.service":       "showcase",
+				"gcp.client.version":       "DYNAMIC",
+				"gcp.grpc.resend_count":    int64(0),
+				// TODO: rpc.grpc.status_code is [deleted] in OTel SemConv 1.39 (use rpc.response.status_code).
+				"rpc.grpc.status_code":     int64(0),
+				// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
+				"rpc.method":               "Echo",
+				"rpc.response.status_code": "OK",
+				// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
+				"rpc.service":              "google.showcase.v1beta1.Echo",
+				// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
+				"rpc.system":               "grpc",
+				"server.address":           "127.0.0.1",
+				"server.port":              int64(7469),
+				"url.domain":               "showcase.googleapis.com",
+			}
+
+			if typ == "rest" {
+				wantAttrs["rpc.system.name"] = "http"
+				wantAttrs["http.request.method"] = "POST"
+				wantAttrs["http.request.resend_count"] = int64(0)
+				wantAttrs["http.response.status_code"] = int64(200)
+				wantAttrs["network.protocol.version"] = "1.1"
+				wantAttrs["url.full"] = "http://127.0.0.1:7469/v1beta1/echo:echo?%24alt=json%3Benum-encoding%3Dint"
+				wantAttrs["url.template"] = "/v1beta1/echo:echo"
+				delete(wantAttrs, "gcp.grpc.resend_count")
+				delete(wantAttrs, "rpc.grpc.status_code")
+				delete(wantAttrs, "rpc.method")
+				delete(wantAttrs, "rpc.response.status_code")
+				delete(wantAttrs, "rpc.service")
+				delete(wantAttrs, "rpc.system")
+			}
+
+			if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
+				gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
+			}
+
+			if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
+				t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
+			}
+		})
 	}
 }

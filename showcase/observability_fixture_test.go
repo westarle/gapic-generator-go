@@ -33,6 +33,7 @@ func (s *mockTraceServer) Export(ctx context.Context, req *pb.ExportTraceService
 type CapturedSpan struct {
 	Name       string
 	Scope      string
+	TraceID    []byte
 	Attributes map[string]any
 }
 
@@ -50,9 +51,9 @@ func (s *mockTraceServer) GetCapturedSpans() []CapturedSpan {
 	for _, req := range reqs {
 		for _, rs := range req.ResourceSpans {
 			for _, ss := range rs.ScopeSpans {
-				for _, s := range ss.Spans {
+				for _, span := range ss.Spans {
 					attrs := make(map[string]any)
-					for _, kv := range s.Attributes {
+					for _, kv := range span.Attributes {
 						if kv.Value != nil {
 							switch v := kv.Value.Value.(type) {
 							case *v1common.AnyValue_StringValue:
@@ -70,8 +71,9 @@ func (s *mockTraceServer) GetCapturedSpans() []CapturedSpan {
 						}
 					}
 					spans = append(spans, CapturedSpan{
-						Name:       s.Name,
+						Name:       span.Name,
 						Scope:      ss.Scope.Name,
+						TraceID:    span.TraceId,
 						Attributes: attrs,
 					})
 				}
