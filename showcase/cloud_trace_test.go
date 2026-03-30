@@ -32,9 +32,12 @@ func TestObservability_Tracing_CloudTrace_Integration(t *testing.T) {
 	if err != nil {
 		t.Skipf("Skipping Cloud Trace integration test: %v", err)
 	}
-	projectID := creds.ProjectID
+	projectID := os.Getenv("GCLOUD_TESTS_GOLANG_PROJECT_ID")
 	if projectID == "" {
-		t.Skip("Skipping Cloud Trace integration test: no project ID found in default credentials")
+		projectID = creds.ProjectID
+	}
+	if projectID == "" {
+		t.Skip("Skipping Cloud Trace integration test: no project ID found in GCLOUD_TESTS_GOLANG_PROJECT_ID or default credentials")
 	}
 
 	gax.TestOnlyResetIsFeatureEnabled()
@@ -46,6 +49,10 @@ func TestObservability_Tracing_CloudTrace_Integration(t *testing.T) {
 	os.Setenv("OTEL_RESOURCE_ATTRIBUTES", "gcp.project_id="+projectID)
 	t.Cleanup(func() { os.Unsetenv("OTEL_RESOURCE_ATTRIBUTES") })
 
+	// The telemetry endpoint requires a quota project when using ADC user credentials
+	os.Setenv("GOOGLE_CLOUD_QUOTA_PROJECT", projectID)
+	t.Cleanup(func() { os.Unsetenv("GOOGLE_CLOUD_QUOTA_PROJECT") })
+
 	grpcCreds, err := oauth.NewApplicationDefault(ctx)
 	if err != nil {
 		t.Fatalf("failed to create gRPC credentials: %v", err)
@@ -56,6 +63,7 @@ func TestObservability_Tracing_CloudTrace_Integration(t *testing.T) {
 		otlptracegrpc.WithEndpoint("telemetry.googleapis.com:443"),
 		otlptracegrpc.WithDialOption(grpc.WithPerRPCCredentials(grpcCreds)),
 		otlptracegrpc.WithTLSCredentials(credentials.NewClientTLSFromCert(nil, "")),
+		otlptracegrpc.WithHeaders(map[string]string{"x-goog-user-project": projectID}),
 	)
 	if err != nil {
 		t.Fatalf("failed to create OTLP exporter: %v", err)

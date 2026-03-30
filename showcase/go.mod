@@ -5,6 +5,7 @@ go 1.25.0
 require (
 	cloud.google.com/go v0.123.0
 	cloud.google.com/go/iam v1.5.3
+	cloud.google.com/go/trace v1.11.7
 	github.com/google/go-cmp v0.7.0
 	github.com/googleapis/gapic-showcase v0.38.0
 	github.com/googleapis/gax-go/v2 v2.19.0
