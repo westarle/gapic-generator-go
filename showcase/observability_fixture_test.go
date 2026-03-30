@@ -33,6 +33,7 @@ func (s *mockTraceServer) Export(ctx context.Context, req *pb.ExportTraceService
 type CapturedSpan struct {
 	Name       string
 	Scope      string
+	TraceID    []byte
 	Attributes map[string]any
 }
 
@@ -72,6 +73,7 @@ func (s *mockTraceServer) GetCapturedSpans() []CapturedSpan {
 					spans = append(spans, CapturedSpan{
 						Name:       s.Name,
 						Scope:      ss.Scope.Name,
+						TraceID:    s.TraceId,
 						Attributes: attrs,
 					})
 				}

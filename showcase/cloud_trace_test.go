@@ -10,7 +10,6 @@ import (
 	trace "cloud.google.com/go/trace/apiv1"
 	"cloud.google.com/go/trace/apiv1/tracepb"
 	showcase "github.com/googleapis/gapic-showcase/client"
-	showcasepb "github.com/googleapis/gapic-showcase/server/genproto"
 	gax "github.com/googleapis/gax-go/v2"
 	"go.opentelemetry.io/contrib/detectors/gcp"
 	"go.opentelemetry.io/otel"
@@ -22,12 +21,9 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/credentials/oauth"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func setupCloudTrace(t *testing.T) string {
@@ -154,98 +150,29 @@ func TestObservability_Tracing_CloudTrace_Integration(t *testing.T) {
 
 	// 1. Success Scenario
 	t.Run("Success", func(t *testing.T) {
-		responses := []*showcasepb.Sequence_Response{
-			{Status: status.New(codes.OK, "OK").Proto()},
-		}
-		seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
-			Sequence: &showcasepb.Sequence{Responses: responses},
-		})
-		if err != nil {
-			t.Fatalf("CreateSequence failed: %v", err)
-		}
-
-		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-Success")
-		_ = seqClient.AttemptSequence(ctxSpan, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
-		span.End()
-
-		// Force flush to send immediately
+		traceID, _ := runTracingSuccessScenario(ctx, t, seqClient)
 		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
-		verifyTrace(t, ctx, traceClient, projectID, span.SpanContext().TraceID())
+		verifyTrace(t, ctx, traceClient, projectID, traceID)
 	})
 
 	// 2. Server Failure Scenario
 	t.Run("ServerFailure", func(t *testing.T) {
-		responses := []*showcasepb.Sequence_Response{
-			{Status: status.New(codes.NotFound, "not found").Proto()},
-		}
-		seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
-			Sequence: &showcasepb.Sequence{Responses: responses},
-		})
-		if err != nil {
-			t.Fatalf("CreateSequence failed: %v", err)
-		}
-
-		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-ServerFailure")
-		_ = seqClient.AttemptSequence(ctxSpan, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
-		span.End()
-
+		traceID, _ := runTracingServerFailureScenario(ctx, t, seqClient)
 		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
-		verifyTrace(t, ctx, traceClient, projectID, span.SpanContext().TraceID())
+		verifyTrace(t, ctx, traceClient, projectID, traceID)
 	})
 
 	// 3. Client Failure Scenario
 	t.Run("ClientFailure", func(t *testing.T) {
-		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-ClientFailure")
-
-		timeoutCtx, cancelTimeout := context.WithTimeout(ctxSpan, 1*time.Millisecond)
-		defer cancelTimeout()
-
-		_, _ = echoClient.Block(timeoutCtx, &showcasepb.BlockRequest{
-			ResponseDelay: &durationpb.Duration{Seconds: 1},
-			Response: &showcasepb.BlockRequest_Success{
-				Success: &showcasepb.BlockResponse{Content: "hello"},
-			},
-		})
-		span.End()
-
+		traceID, _ := runTracingClientFailureScenario(ctx, t, seqClient)
 		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
-		verifyTrace(t, ctx, traceClient, projectID, span.SpanContext().TraceID())
+		verifyTrace(t, ctx, traceClient, projectID, traceID)
 	})
 
 	// 4. Retry Scenario
 	t.Run("Retry", func(t *testing.T) {
-		responses := []*showcasepb.Sequence_Response{
-			{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
-			{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
-			{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
-			{Status: status.New(codes.OK, "OK").Proto()},
-		}
-
-		seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
-			Sequence: &showcasepb.Sequence{Responses: responses},
-		})
-		if err != nil {
-			t.Fatalf("CreateSequence failed: %v", err)
-		}
-
-		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-Retry")
-
-		retryCtx, cancel := context.WithTimeout(ctxSpan, 5*time.Second)
-		defer cancel()
-
-		bo := gax.Backoff{
-			Initial:    10 * time.Millisecond,
-			Max:        100 * time.Millisecond,
-			Multiplier: 2.00,
-		}
-		retryOpt := gax.WithRetry(func() gax.Retryer {
-			return gax.OnCodes([]codes.Code{codes.Unavailable}, bo)
-		})
-
-		_ = seqClient.AttemptSequence(retryCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, retryOpt)
-		span.End()
-
+		traceID, _ := runTracingRetryScenario(ctx, t, seqClient)
 		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
-		verifyTrace(t, ctx, traceClient, projectID, span.SpanContext().TraceID())
+		verifyTrace(t, ctx, traceClient, projectID, traceID)
 	})
 }

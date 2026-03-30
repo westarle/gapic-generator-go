@@ -8,16 +8,14 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	showcase "github.com/googleapis/gapic-showcase/client"
-	showcasepb "github.com/googleapis/gapic-showcase/server/genproto"
 	gax "github.com/googleapis/gax-go/v2"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
-	"google.golang.org/protobuf/types/known/durationpb"
 )
 
 func setupTracingTest(t *testing.T, enableTracing bool) (*observabilityFixture, []option.ClientOption) {
@@ -47,34 +45,8 @@ func setupTracingTest(t *testing.T, enableTracing bool) (*observabilityFixture, 
 	return fix, grpcClientOpts
 }
 
-func TestObservability_Tracing_Success(t *testing.T) {
-	fix, clientOpts := setupTracingTest(t, true)
-	ctx := context.Background()
-	seqClient, err := showcase.NewSequenceClient(ctx, clientOpts...)
-	if err != nil {
-		t.Fatalf("failed to create sequence client: %v", err)
-	}
-	t.Cleanup(func() { seqClient.Close() })
-
-	// Pre-flight: Create a sequence that will immediately return OK
-	responses := []*showcasepb.Sequence_Response{
-		{Status: status.New(codes.OK, "OK").Proto()},
-	}
-	seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
-		Sequence: &showcasepb.Sequence{Responses: responses},
-	})
-	if err != nil {
-		t.Fatalf("CreateSequence failed: %v", err)
-	}
-
-	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
-
-	// Call an RPC that succeeds
-	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
-	if err != nil {
-		t.Fatalf("AttemptSequence RPC failed: %v", err)
-	}
-	span.End()
+func verifyInMemorySpan(t *testing.T, fix *observabilityFixture, expectedName string, traceID trace.TraceID, wantAttrs map[string]any) {
+	t.Helper()
 
 	// Force flush the provider to ensure traces are exported
 	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -93,7 +65,7 @@ func TestObservability_Tracing_Success(t *testing.T) {
 
 	var gotSpan *CapturedSpan
 	for _, s := range spans {
-		if s.Name == "google.showcase.v1beta1.SequenceService/AttemptSequence" {
+		if string(s.TraceID) == string(traceID[:]) && s.Name == expectedName {
 			gotSpan = &s
 			break
 		}
@@ -109,6 +81,28 @@ func TestObservability_Tracing_Success(t *testing.T) {
 	if gotSpan.Scope != expectedScope {
 		t.Errorf("expected span scope to be %q, got %q", expectedScope, gotSpan.Scope)
 	}
+
+	if wantAttrs != nil {
+		if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
+			gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
+		}
+
+		if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
+			t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
+		}
+	}
+}
+
+func TestObservability_Tracing_Success(t *testing.T) {
+	fix, clientOpts := setupTracingTest(t, true)
+	ctx := context.Background()
+	seqClient, err := showcase.NewSequenceClient(ctx, clientOpts...)
+	if err != nil {
+		t.Fatalf("failed to create sequence client: %v", err)
+	}
+	t.Cleanup(func() { seqClient.Close() })
+
+	traceID, _ := runTracingSuccessScenario(ctx, t, seqClient)
 
 	wantAttrs := map[string]any{
 		"gcp.client.artifact":         "github.com/googleapis/gapic-showcase/client",
@@ -134,57 +128,19 @@ func TestObservability_Tracing_Success(t *testing.T) {
 		"url.domain":                  "showcase.googleapis.com",
 	}
 
-	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
-		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
-	}
-
-	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
-		t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
-	}
+	verifyInMemorySpan(t, fix, "google.showcase.v1beta1.SequenceService/AttemptSequence", traceID, wantAttrs)
 }
 
 func TestObservability_Tracing_Failure(t *testing.T) {
 	fix, clientOpts := setupTracingTest(t, true)
 	ctx := context.Background()
-	echoClient, err := showcase.NewEchoClient(ctx, clientOpts...)
+	seqClient, err := showcase.NewSequenceClient(ctx, clientOpts...)
 	if err != nil {
-		t.Fatalf("failed to create echo client: %v", err)
+		t.Fatalf("failed to create sequence client: %v", err)
 	}
-	t.Cleanup(func() { echoClient.Close() })
+	t.Cleanup(func() { seqClient.Close() })
 
-	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
-
-	// Call an RPC that fails
-	_, err = echoClient.Echo(ctx, &showcasepb.EchoRequest{
-		Response: &showcasepb.EchoRequest_Error{
-			Error: status.New(codes.NotFound, "not found").Proto(),
-		},
-	})
-	if err == nil {
-		t.Fatalf("Expected error, got nil")
-	}
-	span.End()
-
-	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := fix.provider.ForceFlush(ctxFlush); err != nil {
-		t.Fatalf("failed to flush provider: %v", err)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
-	spans := fix.traceServer.GetCapturedSpans()
-	var gotSpan *CapturedSpan
-	for _, s := range spans {
-		if s.Name == "google.showcase.v1beta1.Echo/Echo" {
-			gotSpan = &s
-			break
-		}
-	}
-
-	if gotSpan == nil {
-		t.Fatalf("did not find the expected client span")
-	}
+	traceID, _ := runTracingServerFailureScenario(ctx, t, seqClient)
 
 	wantAttrs := map[string]any{
 		"error.type":               "NOT_FOUND",
@@ -196,13 +152,15 @@ func TestObservability_Tracing_Failure(t *testing.T) {
 		"gcp.client.service":       "showcase",
 		"gcp.client.version":       "DYNAMIC",
 		"gcp.grpc.resend_count":    int64(0),
+		// TODO: gcp.resource.destination.id should be populated from the resource_reference, but currently is not emitted by the generator.
+		// "gcp.resource.destination.id": seq.GetName(),
 		// TODO: rpc.grpc.status_code is [deleted] in OTel SemConv 1.39 (use rpc.response.status_code).
 		"rpc.grpc.status_code":     int64(codes.NotFound),
 		// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
-		"rpc.method":               "Echo",
+		"rpc.method":               "AttemptSequence",
 		"rpc.response.status_code": "NOT_FOUND",
 		// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
-		"rpc.service":              "google.showcase.v1beta1.Echo",
+		"rpc.service":              "google.showcase.v1beta1.SequenceService",
 		// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
 		"rpc.system":               "grpc",
 		"server.address":           "127.0.0.1",
@@ -211,13 +169,7 @@ func TestObservability_Tracing_Failure(t *testing.T) {
 		"url.domain":               "showcase.googleapis.com",
 	}
 
-	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
-		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
-	}
-
-	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
-		t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
-	}
+	verifyInMemorySpan(t, fix, "google.showcase.v1beta1.SequenceService/AttemptSequence", traceID, wantAttrs)
 }
 
 func TestObservability_Tracing_ClientFailure(t *testing.T) {
@@ -229,51 +181,7 @@ func TestObservability_Tracing_ClientFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { seqClient.Close() })
 
-	responses := []*showcasepb.Sequence_Response{
-		{
-			Status: status.New(codes.OK, "OK").Proto(),
-			Delay:  durationpb.New(1 * time.Second),
-		},
-	}
-	seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
-		Sequence: &showcasepb.Sequence{Responses: responses},
-	})
-	if err != nil {
-		t.Fatalf("CreateSequence failed: %v", err)
-	}
-
-	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
-
-	// Force a client-side deadline exceeded error
-	timeoutCtx, cancelTimeout := context.WithTimeout(ctx, 1*time.Millisecond)
-	defer cancelTimeout()
-
-	err = seqClient.AttemptSequence(timeoutCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
-	if err == nil {
-		t.Fatalf("Expected error, got nil")
-	}
-	span.End()
-
-	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := fix.provider.ForceFlush(ctxFlush); err != nil {
-		t.Fatalf("failed to flush provider: %v", err)
-	}
-
-	time.Sleep(100 * time.Millisecond)
-
-	spans := fix.traceServer.GetCapturedSpans()
-	var gotSpan *CapturedSpan
-	for _, s := range spans {
-		if s.Name == "google.showcase.v1beta1.SequenceService/AttemptSequence" {
-			gotSpan = &s
-			break
-		}
-	}
-
-	if gotSpan == nil {
-		t.Fatalf("did not find the expected client span")
-	}
+	traceID, _ := runTracingClientFailureScenario(ctx, t, seqClient)
 
 	wantAttrs := map[string]any{
 		"error.type":               "CLIENT_TIMEOUT",
@@ -302,13 +210,7 @@ func TestObservability_Tracing_ClientFailure(t *testing.T) {
 		"url.domain":               "showcase.googleapis.com",
 	}
 
-	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
-		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
-	}
-
-	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
-		t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
-	}
+	verifyInMemorySpan(t, fix, "google.showcase.v1beta1.SequenceService/AttemptSequence", traceID, wantAttrs)
 }
 
 func TestObservability_Tracing_Disablement(t *testing.T) {
@@ -320,17 +222,7 @@ func TestObservability_Tracing_Disablement(t *testing.T) {
 	}
 	t.Cleanup(func() { echoClient.Close() })
 
-	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
-
-	_, err = echoClient.Echo(ctx, &showcasepb.EchoRequest{
-		Response: &showcasepb.EchoRequest_Content{
-			Content: "hello",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Echo RPC failed: %v", err)
-	}
-	span.End()
+	traceID := runTracingDisablementScenario(ctx, t, echoClient)
 
 	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -343,7 +235,7 @@ func TestObservability_Tracing_Disablement(t *testing.T) {
 	spans := fix.traceServer.GetCapturedSpans()
 	var gotSpan *CapturedSpan
 	for _, s := range spans {
-		if s.Name == "google.showcase.v1beta1.Echo/Echo" {
+		if string(s.TraceID) == string(traceID[:]) && s.Name == "google.showcase.v1beta1.Echo/Echo" {
 			gotSpan = &s
 			break
 		}
@@ -366,36 +258,7 @@ func TestObservability_Tracing_Retry(t *testing.T) {
 	}
 	t.Cleanup(func() { seqClient.Close() })
 
-	responses := []*showcasepb.Sequence_Response{
-		{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
-		{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
-		{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
-		{Status: status.New(codes.OK, "OK").Proto()},
-	}
-
-	seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
-		Sequence: &showcasepb.Sequence{Responses: responses},
-	})
-	if err != nil {
-		t.Fatalf("CreateSequence failed: %v", err)
-	}
-
-	retryCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	bo := gax.Backoff{
-		Initial:    10 * time.Millisecond,
-		Max:        100 * time.Millisecond,
-		Multiplier: 2.00,
-	}
-	retryOpt := gax.WithRetry(func() gax.Retryer {
-		return gax.OnCodes([]codes.Code{codes.Unavailable}, bo)
-	})
-
-	err = seqClient.AttemptSequence(retryCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, retryOpt)
-	if err != nil {
-		t.Fatalf("AttemptSequence failed: %v", err)
-	}
+	traceID, _ := runTracingRetryScenario(ctx, t, seqClient)
 
 	ctxFlush, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelFlush()
@@ -408,7 +271,7 @@ func TestObservability_Tracing_Retry(t *testing.T) {
 	spans := fix.traceServer.GetCapturedSpans()
 	var attemptSpans []CapturedSpan
 	for _, s := range spans {
-		if s.Name == "google.showcase.v1beta1.SequenceService/AttemptSequence" {
+		if string(s.TraceID) == string(traceID[:]) && s.Name == "google.showcase.v1beta1.SequenceService/AttemptSequence" {
 			attemptSpans = append(attemptSpans, s)
 		}
 	}
