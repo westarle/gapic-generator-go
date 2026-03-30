@@ -2,6 +2,7 @@ package showcase
 
 import (
 	"context"
+	"encoding/hex"
 	"os"
 	"testing"
 	"time"
@@ -21,12 +22,15 @@ import (
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/credentials/oauth"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-func TestObservability_Tracing_CloudTrace_Integration(t *testing.T) {
+func setupCloudTrace(t *testing.T) string {
 	ctx := context.Background()
 	creds, err := google.FindDefaultCredentials(ctx, "https://www.googleapis.com/auth/cloud-platform")
 	if err != nil {
@@ -92,49 +96,12 @@ func TestObservability_Tracing_CloudTrace_Integration(t *testing.T) {
 		defer cancel()
 		tp.Shutdown(ctx)
 	})
+	
+	return projectID
+}
 
-	grpcClientOpts := []option.ClientOption{
-		option.WithEndpoint("127.0.0.1:7469"),
-		option.WithTokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "dummy-token"})),
-		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
-	}
-
-	echoClient, err := showcase.NewEchoClient(ctx, grpcClientOpts...)
-	if err != nil {
-		t.Fatalf("failed to create echo client: %v", err)
-	}
-	t.Cleanup(func() { echoClient.Close() })
-
-	// Start a trace
-	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
-	traceID := span.SpanContext().TraceID()
-
-	// Call an RPC that succeeds
-	_, err = echoClient.Echo(ctx, &showcasepb.EchoRequest{
-		Response: &showcasepb.EchoRequest_Content{
-			Content: "hello from cloud trace test",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Echo RPC failed: %v", err)
-	}
-	span.End()
-
-	// Force flush the provider to ensure traces are exported
-	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := tp.ForceFlush(ctxFlush); err != nil {
-		t.Fatalf("failed to flush provider: %v", err)
-	}
-
-	// Verify trace exists in Cloud Trace API
-	traceClient, err := trace.NewClient(ctx)
-	if err != nil {
-		t.Fatalf("failed to create trace client: %v", err)
-	}
-	t.Cleanup(func() { traceClient.Close() })
-
-	traceIDStr := traceID.String()
+func verifyTrace(t *testing.T, ctx context.Context, traceClient *trace.Client, projectID string, traceID [16]byte) {
+	traceIDStr := hex.EncodeToString(traceID[:])
 	t.Logf("Looking for trace %s in project %s", traceIDStr, projectID)
 
 	var found bool
@@ -155,4 +122,130 @@ func TestObservability_Tracing_CloudTrace_Integration(t *testing.T) {
 	if !found {
 		t.Errorf("Trace %s was not found in Cloud Trace backend", traceIDStr)
 	}
+}
+
+func TestObservability_Tracing_CloudTrace_Integration(t *testing.T) {
+	projectID := setupCloudTrace(t)
+	ctx := context.Background()
+
+	grpcClientOpts := []option.ClientOption{
+		option.WithEndpoint("127.0.0.1:7469"),
+		option.WithTokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "dummy-token"})),
+		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
+	}
+
+	seqClient, err := showcase.NewSequenceClient(ctx, grpcClientOpts...)
+	if err != nil {
+		t.Fatalf("failed to create sequence client: %v", err)
+	}
+	t.Cleanup(func() { seqClient.Close() })
+	
+	echoClient, err := showcase.NewEchoClient(ctx, grpcClientOpts...)
+	if err != nil {
+		t.Fatalf("failed to create echo client: %v", err)
+	}
+	t.Cleanup(func() { echoClient.Close() })
+
+	traceClient, err := trace.NewClient(ctx)
+	if err != nil {
+		t.Fatalf("failed to create trace client: %v", err)
+	}
+	t.Cleanup(func() { traceClient.Close() })
+
+	// 1. Success Scenario
+	t.Run("Success", func(t *testing.T) {
+		responses := []*showcasepb.Sequence_Response{
+			{Status: status.New(codes.OK, "OK").Proto()},
+		}
+		seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
+			Sequence: &showcasepb.Sequence{Responses: responses},
+		})
+		if err != nil {
+			t.Fatalf("CreateSequence failed: %v", err)
+		}
+
+		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-Success")
+		_ = seqClient.AttemptSequence(ctxSpan, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
+		span.End()
+
+		// Force flush to send immediately
+		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
+		verifyTrace(t, ctx, traceClient, projectID, span.SpanContext().TraceID())
+	})
+
+	// 2. Server Failure Scenario
+	t.Run("ServerFailure", func(t *testing.T) {
+		responses := []*showcasepb.Sequence_Response{
+			{Status: status.New(codes.NotFound, "not found").Proto()},
+		}
+		seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
+			Sequence: &showcasepb.Sequence{Responses: responses},
+		})
+		if err != nil {
+			t.Fatalf("CreateSequence failed: %v", err)
+		}
+
+		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-ServerFailure")
+		_ = seqClient.AttemptSequence(ctxSpan, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
+		span.End()
+
+		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
+		verifyTrace(t, ctx, traceClient, projectID, span.SpanContext().TraceID())
+	})
+
+	// 3. Client Failure Scenario
+	t.Run("ClientFailure", func(t *testing.T) {
+		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-ClientFailure")
+
+		timeoutCtx, cancelTimeout := context.WithTimeout(ctxSpan, 1*time.Millisecond)
+		defer cancelTimeout()
+
+		_, _ = echoClient.Block(timeoutCtx, &showcasepb.BlockRequest{
+			ResponseDelay: &durationpb.Duration{Seconds: 1},
+			Response: &showcasepb.BlockRequest_Success{
+				Success: &showcasepb.BlockResponse{Content: "hello"},
+			},
+		})
+		span.End()
+
+		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
+		verifyTrace(t, ctx, traceClient, projectID, span.SpanContext().TraceID())
+	})
+
+	// 4. Retry Scenario
+	t.Run("Retry", func(t *testing.T) {
+		responses := []*showcasepb.Sequence_Response{
+			{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
+			{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
+			{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
+			{Status: status.New(codes.OK, "OK").Proto()},
+		}
+
+		seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
+			Sequence: &showcasepb.Sequence{Responses: responses},
+		})
+		if err != nil {
+			t.Fatalf("CreateSequence failed: %v", err)
+		}
+
+		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-Retry")
+
+		retryCtx, cancel := context.WithTimeout(ctxSpan, 5*time.Second)
+		defer cancel()
+
+		bo := gax.Backoff{
+			Initial:    10 * time.Millisecond,
+			Max:        100 * time.Millisecond,
+			Multiplier: 2.00,
+		}
+		retryOpt := gax.WithRetry(func() gax.Retryer {
+			return gax.OnCodes([]codes.Code{codes.Unavailable}, bo)
+		})
+
+		_ = seqClient.AttemptSequence(retryCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, retryOpt)
+		span.End()
+
+		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
+		verifyTrace(t, ctx, traceClient, projectID, span.SpanContext().TraceID())
+	})
 }
