@@ -50,22 +50,29 @@ func setupTracingTest(t *testing.T, enableTracing bool) (*observabilityFixture, 
 func TestObservability_Tracing_Success(t *testing.T) {
 	fix, clientOpts := setupTracingTest(t, true)
 	ctx := context.Background()
-	echoClient, err := showcase.NewEchoClient(ctx, clientOpts...)
+	seqClient, err := showcase.NewSequenceClient(ctx, clientOpts...)
 	if err != nil {
-		t.Fatalf("failed to create echo client: %v", err)
+		t.Fatalf("failed to create sequence client: %v", err)
 	}
-	t.Cleanup(func() { echoClient.Close() })
+	t.Cleanup(func() { seqClient.Close() })
+
+	// Pre-flight: Create a sequence that will immediately return OK
+	responses := []*showcasepb.Sequence_Response{
+		{Status: status.New(codes.OK, "OK").Proto()},
+	}
+	seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
+		Sequence: &showcasepb.Sequence{Responses: responses},
+	})
+	if err != nil {
+		t.Fatalf("CreateSequence failed: %v", err)
+	}
 
 	ctx, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
 
 	// Call an RPC that succeeds
-	_, err = echoClient.Echo(ctx, &showcasepb.EchoRequest{
-		Response: &showcasepb.EchoRequest_Content{
-			Content: "hello",
-		},
-	})
+	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
 	if err != nil {
-		t.Fatalf("Echo RPC failed: %v", err)
+		t.Fatalf("AttemptSequence RPC failed: %v", err)
 	}
 	span.End()
 
@@ -86,7 +93,7 @@ func TestObservability_Tracing_Success(t *testing.T) {
 
 	var gotSpan *CapturedSpan
 	for _, s := range spans {
-		if s.Name == "google.showcase.v1beta1.Echo/Echo" {
+		if s.Name == "google.showcase.v1beta1.SequenceService/AttemptSequence" {
 			gotSpan = &s
 			break
 		}
@@ -104,25 +111,27 @@ func TestObservability_Tracing_Success(t *testing.T) {
 	}
 
 	wantAttrs := map[string]any{
-		"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
+		"gcp.client.artifact":         "github.com/googleapis/gapic-showcase/client",
 		// TODO: gcp.client.language is [removed] from requirements (present in telemetry.sdk.language).
-		"gcp.client.language":      "go",
-		"gcp.client.repo":          "googleapis/google-cloud-go",
-		"gcp.client.service":       "showcase",
-		"gcp.client.version":       "DYNAMIC",
-		"gcp.grpc.resend_count":    int64(0),
+		"gcp.client.language":         "go",
+		"gcp.client.repo":             "googleapis/google-cloud-go",
+		"gcp.client.service":          "showcase",
+		"gcp.client.version":          "DYNAMIC",
+		"gcp.grpc.resend_count":       int64(0),
+		// TODO: gcp.resource.destination.id should be populated from the resource_reference, but currently is not emitted by the generator.
+		// "gcp.resource.destination.id": seq.GetName(),
 		// TODO: rpc.grpc.status_code is [deleted] in OTel SemConv 1.39 (use rpc.response.status_code).
-		"rpc.grpc.status_code":     int64(0),
+		"rpc.grpc.status_code":        int64(0),
 		// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
-		"rpc.method":               "Echo",
-		"rpc.response.status_code": "OK",
+		"rpc.method":                  "AttemptSequence",
+		"rpc.response.status_code":    "OK",
 		// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
-		"rpc.service":              "google.showcase.v1beta1.Echo",
+		"rpc.service":                 "google.showcase.v1beta1.SequenceService",
 		// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
-		"rpc.system":               "grpc",
-		"server.address":           "127.0.0.1",
-		"server.port":              int64(7469),
-		"url.domain":               "showcase.googleapis.com",
+		"rpc.system":                  "grpc",
+		"server.address":              "127.0.0.1",
+		"server.port":                 int64(7469),
+		"url.domain":                  "showcase.googleapis.com",
 	}
 
 	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
@@ -191,6 +200,7 @@ func TestObservability_Tracing_Failure(t *testing.T) {
 		"rpc.grpc.status_code":     int64(codes.NotFound),
 		// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
 		"rpc.method":               "Echo",
+		"rpc.response.status_code": "NOT_FOUND",
 		// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
 		"rpc.service":              "google.showcase.v1beta1.Echo",
 		// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
@@ -204,9 +214,6 @@ func TestObservability_Tracing_Failure(t *testing.T) {
 	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
 		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
 	}
-	
-	// Temporarily ignore rpc.response.status_code in failure tests until we see what otelgrpc emits
-	delete(gotSpan.Attributes, "rpc.response.status_code")
 
 	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
 		t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
@@ -274,6 +281,7 @@ func TestObservability_Tracing_ClientFailure(t *testing.T) {
 		"rpc.grpc.status_code":     int64(codes.DeadlineExceeded),
 		// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
 		"rpc.method":               "Block",
+		"rpc.response.status_code": "DEADLINE_EXCEEDED",
 		// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
 		"rpc.service":              "google.showcase.v1beta1.Echo",
 		// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
@@ -287,9 +295,6 @@ func TestObservability_Tracing_ClientFailure(t *testing.T) {
 	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
 		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
 	}
-	
-	// Temporarily ignore rpc.response.status_code in failure tests until we see what otelgrpc emits
-	delete(gotSpan.Attributes, "rpc.response.status_code")
 
 	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
 		t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
