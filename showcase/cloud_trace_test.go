@@ -150,28 +150,40 @@ func TestObservability_Tracing_CloudTrace_Integration(t *testing.T) {
 
 	// 1. Success Scenario
 	t.Run("Success", func(t *testing.T) {
-		traceID, _ := runTracingSuccessScenario(ctx, t, seqClient)
+		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-Success")
+		_ = runTracingSuccessScenario(ctxSpan, t, seqClient)
+		span.End()
+		traceID := span.SpanContext().TraceID()
 		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
 		verifyTrace(t, ctx, traceClient, projectID, traceID)
 	})
 
 	// 2. Server Failure Scenario
 	t.Run("ServerFailure", func(t *testing.T) {
-		traceID, _ := runTracingServerFailureScenario(ctx, t, seqClient)
+		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-ServerFailure")
+		_ = runTracingServerFailureScenario(ctxSpan, t, seqClient)
+		span.End()
+		traceID := span.SpanContext().TraceID()
 		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
 		verifyTrace(t, ctx, traceClient, projectID, traceID)
 	})
 
 	// 3. Client Failure Scenario
 	t.Run("ClientFailure", func(t *testing.T) {
-		traceID, _ := runTracingClientFailureScenario(ctx, t, seqClient)
+		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-ClientFailure")
+		_ = runTracingClientFailureScenario(ctxSpan, t, seqClient)
+		span.End()
+		traceID := span.SpanContext().TraceID()
 		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
 		verifyTrace(t, ctx, traceClient, projectID, traceID)
 	})
 
 	// 4. Retry Scenario
 	t.Run("Retry", func(t *testing.T) {
-		traceID, _ := runTracingRetryScenario(ctx, t, seqClient)
+		ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP-Retry")
+		_ = runTracingRetryScenario(ctxSpan, t, seqClient)
+		span.End()
+		traceID := span.SpanContext().TraceID()
 		otel.GetTracerProvider().(*sdktrace.TracerProvider).ForceFlush(ctx)
 		verifyTrace(t, ctx, traceClient, projectID, traceID)
 	})

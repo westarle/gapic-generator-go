@@ -102,7 +102,10 @@ func TestObservability_Tracing_Success(t *testing.T) {
 	}
 	t.Cleanup(func() { seqClient.Close() })
 
-	traceID, _ := runTracingSuccessScenario(ctx, t, seqClient)
+	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
+	_ = runTracingSuccessScenario(ctxSpan, t, seqClient)
+	span.End()
+	traceID := span.SpanContext().TraceID()
 
 	wantAttrs := map[string]any{
 		"gcp.client.artifact":         "github.com/googleapis/gapic-showcase/client",
@@ -140,7 +143,10 @@ func TestObservability_Tracing_Failure(t *testing.T) {
 	}
 	t.Cleanup(func() { seqClient.Close() })
 
-	traceID, _ := runTracingServerFailureScenario(ctx, t, seqClient)
+	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
+	_ = runTracingServerFailureScenario(ctxSpan, t, seqClient)
+	span.End()
+	traceID := span.SpanContext().TraceID()
 
 	wantAttrs := map[string]any{
 		"error.type":               "NOT_FOUND",
@@ -181,7 +187,10 @@ func TestObservability_Tracing_ClientFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { seqClient.Close() })
 
-	traceID, _ := runTracingClientFailureScenario(ctx, t, seqClient)
+	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
+	_ = runTracingClientFailureScenario(ctxSpan, t, seqClient)
+	span.End()
+	traceID := span.SpanContext().TraceID()
 
 	wantAttrs := map[string]any{
 		"error.type":               "CLIENT_TIMEOUT",
@@ -222,7 +231,10 @@ func TestObservability_Tracing_Disablement(t *testing.T) {
 	}
 	t.Cleanup(func() { echoClient.Close() })
 
-	traceID := runTracingDisablementScenario(ctx, t, echoClient)
+	ctxSpan, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
+	runTracingDisablementScenario(ctxSpan, t, echoClient)
+	span.End()
+	traceID := span.SpanContext().TraceID()
 
 	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -258,7 +270,10 @@ func TestObservability_Tracing_Retry(t *testing.T) {
 	}
 	t.Cleanup(func() { seqClient.Close() })
 
-	traceID, _ := runTracingRetryScenario(ctx, t, seqClient)
+	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
+	_ = runTracingRetryScenario(ctxSpan, t, seqClient)
+	span.End()
+	traceID := span.SpanContext().TraceID()
 
 	ctxFlush, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelFlush()

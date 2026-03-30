@@ -9,13 +9,12 @@ import (
 	showcasepb "github.com/googleapis/gapic-showcase/server/genproto"
 	gax "github.com/googleapis/gax-go/v2"
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
-func runTracingSuccessScenario(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) (trace.TraceID, *showcasepb.Sequence) {
+func runTracingSuccessScenario(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) *showcasepb.Sequence {
 	responses := []*showcasepb.Sequence_Response{
 		{Status: status.New(codes.OK, "OK").Proto()},
 	}
@@ -26,18 +25,15 @@ func runTracingSuccessScenario(ctx context.Context, t *testing.T, seqClient *sho
 		t.Fatalf("CreateSequence failed: %v", err)
 	}
 
-	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
-
-	err = seqClient.AttemptSequence(ctxSpan, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
+	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
 	if err != nil {
 		t.Fatalf("AttemptSequence RPC failed: %v", err)
 	}
-	span.End()
 
-	return span.SpanContext().TraceID(), seq
+	return seq
 }
 
-func runTracingServerFailureScenario(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) (trace.TraceID, *showcasepb.Sequence) {
+func runTracingServerFailureScenario(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) *showcasepb.Sequence {
 	responses := []*showcasepb.Sequence_Response{
 		{Status: status.New(codes.NotFound, "not found").Proto()},
 	}
@@ -48,18 +44,15 @@ func runTracingServerFailureScenario(ctx context.Context, t *testing.T, seqClien
 		t.Fatalf("CreateSequence failed: %v", err)
 	}
 
-	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
-
-	err = seqClient.AttemptSequence(ctxSpan, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
+	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
 	if err == nil {
 		t.Fatalf("Expected error, got nil")
 	}
-	span.End()
 
-	return span.SpanContext().TraceID(), seq
+	return seq
 }
 
-func runTracingClientFailureScenario(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) (trace.TraceID, *showcasepb.Sequence) {
+func runTracingClientFailureScenario(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) *showcasepb.Sequence {
 	responses := []*showcasepb.Sequence_Response{
 		{
 			Status: status.New(codes.OK, "OK").Proto(),
@@ -84,10 +77,10 @@ func runTracingClientFailureScenario(ctx context.Context, t *testing.T, seqClien
 	}
 	span.End()
 
-	return span.SpanContext().TraceID(), seq
+	return seq
 }
 
-func runTracingRetryScenario(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) (trace.TraceID, *showcasepb.Sequence) {
+func runTracingRetryScenario(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) *showcasepb.Sequence {
 	responses := []*showcasepb.Sequence_Response{
 		{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
 		{Status: status.New(codes.Unavailable, "Unavailable").Proto()},
@@ -122,13 +115,11 @@ func runTracingRetryScenario(ctx context.Context, t *testing.T, seqClient *showc
 	}
 	span.End()
 
-	return span.SpanContext().TraceID(), seq
+	return seq
 }
 
-func runTracingDisablementScenario(ctx context.Context, t *testing.T, echoClient *showcase.EchoClient) trace.TraceID {
-	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
-
-	_, err := echoClient.Echo(ctxSpan, &showcasepb.EchoRequest{
+func runTracingDisablementScenario(ctx context.Context, t *testing.T, echoClient *showcase.EchoClient) {
+	_, err := echoClient.Echo(ctx, &showcasepb.EchoRequest{
 		Response: &showcasepb.EchoRequest_Content{
 			Content: "hello",
 		},
@@ -136,7 +127,4 @@ func runTracingDisablementScenario(ctx context.Context, t *testing.T, echoClient
 	if err != nil {
 		t.Fatalf("Echo RPC failed: %v", err)
 	}
-	span.End()
-
-	return span.SpanContext().TraceID()
 }
