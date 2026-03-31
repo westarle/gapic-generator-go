@@ -7,7 +7,6 @@ import (
 
 	"github.com/google/go-cmp/cmp"
 	showcase "github.com/googleapis/gapic-showcase/client"
-	showcasepb "github.com/googleapis/gapic-showcase/server/genproto"
 	gax "github.com/googleapis/gax-go/v2"
 	"go.opentelemetry.io/otel"
 	"golang.org/x/oauth2"
@@ -16,12 +15,16 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-func setupTracingTest(t *testing.T) (*observabilityFixture, []option.ClientOption, []option.ClientOption) {
+func setupTracingTest(t *testing.T, enableTracing bool) (*observabilityFixture, []option.ClientOption, []option.ClientOption) {
 	// Reset feature cache just in case something else evaluated it
 	gax.TestOnlyResetIsFeatureEnabled()
 	t.Cleanup(gax.TestOnlyResetIsFeatureEnabled)
 	
-	os.Setenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING", "true")
+	if enableTracing {
+		os.Setenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING", "true")
+	} else {
+		os.Setenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING", "false")
+	}
 	t.Cleanup(func() { os.Unsetenv("GOOGLE_SDK_GO_EXPERIMENTAL_TRACING") })
 
 	fix := setupObservabilityFixture(t)
@@ -45,20 +48,8 @@ func setupTracingTest(t *testing.T) (*observabilityFixture, []option.ClientOptio
 	return fix, grpcClientOpts, restClientOpts
 }
 
-func runTracingSuccessScenario(ctx context.Context, t *testing.T, echoClient *showcase.EchoClient) {
-	// Call an RPC that succeeds
-	_, err := echoClient.Echo(ctx, &showcasepb.EchoRequest{
-		Response: &showcasepb.EchoRequest_Content{
-			Content: "hello",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Echo RPC failed: %v", err)
-	}
-}
-
 func TestObservability_Tracing_Success(t *testing.T) {
-	fix, grpcOpts, _ := setupTracingTest(t)
+	fix, grpcOpts, _ := setupTracingTest(t, true)
 	ctx := context.Background()
 
 	grpcClient, err := showcase.NewEchoClient(ctx, grpcOpts...)
@@ -114,7 +105,7 @@ func TestObservability_Tracing_Success(t *testing.T) {
 }
 
 func TestObservability_Tracing_SuccessREST(t *testing.T) {
-	fix, _, restOpts := setupTracingTest(t)
+	fix, _, restOpts := setupTracingTest(t, true)
 	ctx := context.Background()
 
 	restClient, err := showcase.NewEchoRESTClient(ctx, restOpts...)
