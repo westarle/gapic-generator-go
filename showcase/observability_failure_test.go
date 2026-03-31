@@ -203,6 +203,9 @@ func TestObservability_Tracing_ClientFailureREST(t *testing.T) {
 		"server.port":               int64(7469),
 		"url.domain":                "showcase.googleapis.com",
 		"url.template":              "/v1beta1/{name=sequences/*}",
+		"error.type":                "context.deadlineExceededError",
+		"status.message":            "context deadline exceeded",
+		"exception.type":            "context.deadlineExceededError",
 	}
 
 	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
@@ -210,9 +213,6 @@ func TestObservability_Tracing_ClientFailureREST(t *testing.T) {
 	}
 	
 	delete(gotSpan.Attributes, "url.full")
-	delete(gotSpan.Attributes, "error.type")
-	delete(gotSpan.Attributes, "exception.type")
-	delete(gotSpan.Attributes, "status.message")
 	delete(gotSpan.Attributes, "http.response.status_code")
 
 	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
