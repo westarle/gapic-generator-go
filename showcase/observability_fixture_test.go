@@ -12,10 +12,13 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	"go.opentelemetry.io/otel/trace"
 	v1common "go.opentelemetry.io/proto/otlp/common/v1"
 	pb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	"google.golang.org/grpc"
 )
+
+// ... mockTraceServer and CapturedSpan definitions remain ...
 
 type mockTraceServer struct {
 	pb.UnimplementedTraceServiceServer
@@ -89,6 +92,54 @@ type observabilityFixture struct {
 	provider    *sdktrace.TracerProvider
 }
 
+func (f *observabilityFixture) Close() {
+	if f.provider != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		f.provider.Shutdown(ctx)
+	}
+	if f.grpcServer != nil {
+		f.grpcServer.Stop()
+	}
+}
+
+func (f *observabilityFixture) FindSpan(t *testing.T, traceID trace.TraceID, expectedName string) *CapturedSpan {
+	t.Helper()
+	
+	// Force flush the provider to ensure traces are exported
+	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := f.provider.ForceFlush(ctxFlush); err != nil {
+		t.Fatalf("failed to flush provider: %v", err)
+	}
+
+	// Give a little time for the gRPC export to arrive
+	time.Sleep(100 * time.Millisecond)
+
+	spans := f.traceServer.GetCapturedSpans()
+	if len(spans) == 0 {
+		t.Fatalf("expected to receive trace exports, got none")
+	}
+
+	var gotSpan *CapturedSpan
+	for _, s := range spans {
+		if string(s.TraceID) == string(traceID[:]) && s.Name == expectedName {
+			gotSpan = &s
+			break
+		}
+	}
+
+	if gotSpan == nil {
+		var names []string
+		for _, s := range spans {
+			names = append(names, s.Name)
+		}
+		t.Fatalf("did not find the expected client span %q. Found spans: %v", expectedName, names)
+	}
+
+	return gotSpan
+}
+
 // setupObservabilityFixture creates an in-memory OTLP trace server and configures the OTel SDK to export to it.
 func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 	t.Helper()
@@ -107,9 +158,6 @@ func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 			t.Logf("grpc server serve err: %v", err)
 		}
 	}()
-	t.Cleanup(func() {
-		grpcServer.Stop()
-	})
 
 	ctx := context.Background()
 	exp, err := otlptracegrpc.New(ctx,
@@ -135,13 +183,6 @@ func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(res),
 	)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := tp.Shutdown(ctx); err != nil {
-			t.Logf("Failed to shutdown tracer provider: %v", err)
-		}
-	})
 
 	return &observabilityFixture{
 		grpcServer:  grpcServer,
