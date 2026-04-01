@@ -8,7 +8,6 @@ import (
 	"github.com/google/go-cmp/cmp"
 	showcase "github.com/googleapis/gapic-showcase/client"
 	"go.opentelemetry.io/otel"
-	"google.golang.org/grpc/codes"
 )
 
 func TestObservability_Tracing_ServerFailure(t *testing.T) {
@@ -34,27 +33,29 @@ func TestObservability_Tracing_ServerFailure(t *testing.T) {
 	}
 
 	wantAttrs := map[string]any{
-		"error.type":               "NOT_FOUND",
-		"exception.type":           "*status.Error",
-		"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-		"gcp.client.language":      "go",
-		"gcp.client.repo":          "googleapis/google-cloud-go",
-		"gcp.client.service":       "showcase",
-		"gcp.client.version":       "DYNAMIC",
-		"gcp.grpc.resend_count":    int64(0),
-		"rpc.grpc.status_code":     int64(codes.NotFound),
-		"rpc.method":               "AttemptSequence",
-		"rpc.response.status_code": "NOT_FOUND",
-		"rpc.service":              "google.showcase.v1beta1.SequenceService",
-		"rpc.system":               "grpc",
-		"server.address":           "127.0.0.1",
-		"server.port":              int64(7469),
-		"status.message":           "not found",
-		"url.domain":               "showcase.googleapis.com",
+		"error.type":                  "NOT_FOUND",
+		"exception.type":              "*status.Error",
+		"gcp.client.artifact":         "github.com/googleapis/gapic-showcase/client",
+		"gcp.client.language":         "go",
+		"gcp.client.repo":             "googleapis/google-cloud-go",
+		"gcp.client.service":          "showcase",
+		"gcp.client.version":          "DYNAMIC",
+		"gcp.grpc.resend_count":       int64(0),
+		"gcp.resource.destination.id": "DYNAMIC",
+		"rpc.method":                  "google.showcase.v1beta1.SequenceService/AttemptSequence",
+		"rpc.response.status_code":    "NOT_FOUND",
+		"rpc.system.name":             "grpc",
+		"server.address":              "127.0.0.1",
+		"server.port":                 int64(7469),
+		"status.message":              "not found",
+		"url.domain":                  "showcase.googleapis.com",
 	}
 
 	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
 		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
+	}
+	if _, ok := gotSpan.Attributes["gcp.resource.destination.id"]; ok {
+		gotSpan.Attributes["gcp.resource.destination.id"] = "DYNAMIC"
 	}
 
 	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
@@ -85,24 +86,28 @@ func TestObservability_Tracing_ServerFailureREST(t *testing.T) {
 	}
 
 	wantAttrs := map[string]any{
-		"gcp.client.artifact":       "github.com/googleapis/gapic-showcase/client",
-		"gcp.client.language":       "go",
-		"gcp.client.repo":           "googleapis/google-cloud-go",
-		"gcp.client.service":        "showcase",
-		"gcp.client.version":        "DYNAMIC",
-		"rpc.system.name":           "http",
-		"http.request.method":       "POST",
-		"http.request.resend_count": int64(0),
-		"http.response.status_code": int64(404),
-		"network.protocol.version":  "1.1",
-		"server.address":            "127.0.0.1",
-		"server.port":               int64(7469),
-		"url.domain":                "showcase.googleapis.com",
-		"url.template":              "/v1beta1/{name=sequences/*}",
+		"gcp.client.artifact":         "github.com/googleapis/gapic-showcase/client",
+		"gcp.client.language":         "go",
+		"gcp.client.repo":             "googleapis/google-cloud-go",
+		"gcp.client.service":          "showcase",
+		"gcp.client.version":          "DYNAMIC",
+		"gcp.resource.destination.id": "DYNAMIC",
+		"rpc.system.name":             "http",
+		"http.request.method":         "POST",
+		"http.request.resend_count":   int64(0),
+		"http.response.status_code":   int64(404),
+		"network.protocol.version":    "1.1",
+		"server.address":              "127.0.0.1",
+		"server.port":                 int64(7469),
+		"url.domain":                  "showcase.googleapis.com",
+		"url.template":                "/v1beta1/{name=sequences/*}",
 	}
 
 	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
 		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
+	}
+	if _, ok := gotSpan.Attributes["gcp.resource.destination.id"]; ok {
+		gotSpan.Attributes["gcp.resource.destination.id"] = "DYNAMIC"
 	}
 	
 	// Remove dynamic url.full
@@ -139,27 +144,29 @@ func TestObservability_Tracing_ClientFailure(t *testing.T) {
 	}
 
 	wantAttrs := map[string]any{
-		"error.type":               "CLIENT_TIMEOUT",
-		"exception.type":           "*status.Error",
-		"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-		"gcp.client.language":      "go",
-		"gcp.client.repo":          "googleapis/google-cloud-go",
-		"gcp.client.service":       "showcase",
-		"gcp.client.version":       "DYNAMIC",
-		"gcp.grpc.resend_count":    int64(0),
-		"rpc.grpc.status_code":     int64(codes.DeadlineExceeded),
-		"rpc.method":               "AttemptSequence",
-		"rpc.response.status_code": "DEADLINE_EXCEEDED",
-		"rpc.service":              "google.showcase.v1beta1.SequenceService",
-		"rpc.system":               "grpc",
-		"server.address":           "127.0.0.1",
-		"server.port":              int64(7469),
-		"status.message":           "context deadline exceeded",
-		"url.domain":               "showcase.googleapis.com",
+		"error.type":                  "CLIENT_TIMEOUT",
+		"exception.type":              "*status.Error",
+		"gcp.client.artifact":         "github.com/googleapis/gapic-showcase/client",
+		"gcp.client.language":         "go",
+		"gcp.client.repo":             "googleapis/google-cloud-go",
+		"gcp.client.service":          "showcase",
+		"gcp.client.version":          "DYNAMIC",
+		"gcp.grpc.resend_count":       int64(0),
+		"gcp.resource.destination.id": "DYNAMIC",
+		"rpc.method":                  "google.showcase.v1beta1.SequenceService/AttemptSequence",
+		"rpc.response.status_code":    "DEADLINE_EXCEEDED",
+		"rpc.system.name":             "grpc",
+		"server.address":              "127.0.0.1",
+		"server.port":                 int64(7469),
+		"status.message":              "context deadline exceeded",
+		"url.domain":                  "showcase.googleapis.com",
 	}
 
 	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
 		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
+	}
+	if _, ok := gotSpan.Attributes["gcp.resource.destination.id"]; ok {
+		gotSpan.Attributes["gcp.resource.destination.id"] = "DYNAMIC"
 	}
 
 	if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
@@ -190,26 +197,30 @@ func TestObservability_Tracing_ClientFailureREST(t *testing.T) {
 	}
 
 	wantAttrs := map[string]any{
-		"gcp.client.artifact":       "github.com/googleapis/gapic-showcase/client",
-		"gcp.client.language":       "go",
-		"gcp.client.repo":           "googleapis/google-cloud-go",
-		"gcp.client.service":        "showcase",
-		"gcp.client.version":        "DYNAMIC",
-		"rpc.system.name":           "http",
-		"http.request.method":       "POST",
-		"http.request.resend_count": int64(0),
-		"network.protocol.version":  "1.1",
-		"server.address":            "127.0.0.1",
-		"server.port":               int64(7469),
-		"url.domain":                "showcase.googleapis.com",
-		"url.template":              "/v1beta1/{name=sequences/*}",
-		"error.type":                "context.deadlineExceededError",
-		"status.message":            "context deadline exceeded",
-		"exception.type":            "context.deadlineExceededError",
+		"gcp.client.artifact":         "github.com/googleapis/gapic-showcase/client",
+		"gcp.client.language":         "go",
+		"gcp.client.repo":             "googleapis/google-cloud-go",
+		"gcp.client.service":          "showcase",
+		"gcp.client.version":          "DYNAMIC",
+		"gcp.resource.destination.id": "DYNAMIC",
+		"rpc.system.name":             "http",
+		"http.request.method":         "POST",
+		"http.request.resend_count":   int64(0),
+		"network.protocol.version":    "1.1",
+		"server.address":              "127.0.0.1",
+		"server.port":                 int64(7469),
+		"url.domain":                  "showcase.googleapis.com",
+		"url.template":                "/v1beta1/{name=sequences/*}",
+		"error.type":                  "context.deadlineExceededError",
+		"status.message":              "context deadline exceeded",
+		"exception.type":              "context.deadlineExceededError",
 	}
 
 	if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
 		gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
+	}
+	if _, ok := gotSpan.Attributes["gcp.resource.destination.id"]; ok {
+		gotSpan.Attributes["gcp.resource.destination.id"] = "DYNAMIC"
 	}
 	
 	delete(gotSpan.Attributes, "url.full")
