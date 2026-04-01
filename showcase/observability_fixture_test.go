@@ -8,12 +8,15 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/detectors/gcp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
-	v1common "go.opentelemetry.io/proto/otlp/common/v1"
+	pbmetric "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	pb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
+	v1common "go.opentelemetry.io/proto/otlp/common/v1"
 	"google.golang.org/grpc"
 )
 
@@ -83,10 +86,94 @@ func (s *mockTraceServer) GetCapturedSpans() []CapturedSpan {
 	return spans
 }
 
+type mockMetricServer struct {
+	pbmetric.UnimplementedMetricsServiceServer
+	mu       sync.Mutex
+	requests []*pbmetric.ExportMetricsServiceRequest
+}
+
+func (s *mockMetricServer) Export(ctx context.Context, req *pbmetric.ExportMetricsServiceRequest) (*pbmetric.ExportMetricsServiceResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requests = append(s.requests, req)
+	return &pbmetric.ExportMetricsServiceResponse{}, nil
+}
+
+type CapturedMetric struct {
+	Name       string
+	Scope      string
+	Attributes map[string]any
+	DataPoints []float64 // Simplifying for histograms
+}
+
+func (s *mockMetricServer) getRequests() []*pbmetric.ExportMetricsServiceRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reqs := make([]*pbmetric.ExportMetricsServiceRequest, len(s.requests))
+	copy(reqs, s.requests)
+	return reqs
+}
+
+func (s *mockMetricServer) GetCapturedMetrics() []CapturedMetric {
+	reqs := s.getRequests()
+	var metrics []CapturedMetric
+	for _, req := range reqs {
+		for _, rm := range req.ResourceMetrics {
+			for _, sm := range rm.ScopeMetrics {
+				for _, m := range sm.Metrics {
+					if hist := m.GetHistogram(); hist != nil {
+						for _, dp := range hist.DataPoints {
+							cmDp := CapturedMetric{
+								Name:  m.Name,
+								Scope: sm.Scope.Name,
+							}
+							var dps []float64
+							if dp.Sum != nil {
+								dps = append(dps, *dp.Sum)
+							} else {
+								dps = append(dps, 0.0)
+							}
+							cmDp.DataPoints = dps
+
+							var attrsMap = make(map[string]any)
+							// Extract Scope Attributes
+							for _, kv := range sm.Scope.Attributes {
+								if kv.Value != nil {
+									switch v := kv.Value.Value.(type) {
+									case *v1common.AnyValue_StringValue:
+										attrsMap[kv.Key] = v.StringValue
+									case *v1common.AnyValue_IntValue:
+										attrsMap[kv.Key] = v.IntValue
+									}
+								}
+							}
+							for _, kv := range dp.Attributes {
+								if kv.Value != nil {
+									switch v := kv.Value.Value.(type) {
+									case *v1common.AnyValue_StringValue:
+										attrsMap[kv.Key] = v.StringValue
+									case *v1common.AnyValue_IntValue:
+										attrsMap[kv.Key] = v.IntValue
+									}
+								}
+							}
+							cmDp.Attributes = attrsMap
+							metrics = append(metrics, cmDp)
+						}
+					}
+				}
+			}
+		}
+	}
+	return metrics
+}
+
 type observabilityFixture struct {
-	grpcServer  *grpc.Server
-	traceServer *mockTraceServer
-	provider    *sdktrace.TracerProvider
+	grpcServer    *grpc.Server
+	traceServer   *mockTraceServer
+	metricServer  *mockMetricServer
+	provider      *sdktrace.TracerProvider
+	meterProvider *sdkmetric.MeterProvider
 }
 
 // setupObservabilityFixture creates an in-memory OTLP trace server and configures the OTel SDK to export to it.
@@ -100,7 +187,9 @@ func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 
 	grpcServer := grpc.NewServer()
 	traceServer := &mockTraceServer{}
+	metricServer := &mockMetricServer{}
 	pb.RegisterTraceServiceServer(grpcServer, traceServer)
+	pbmetric.RegisterMetricsServiceServer(grpcServer, metricServer)
 
 	go func() {
 		if err := grpcServer.Serve(lis); err != nil {
@@ -118,6 +207,14 @@ func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 	)
 	if err != nil {
 		t.Fatalf("failed to create exporter: %v", err)
+	}
+
+	metricExp, err := otlpmetricgrpc.New(ctx,
+		otlpmetricgrpc.WithEndpoint(lis.Addr().String()),
+		otlpmetricgrpc.WithInsecure(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create metric exporter: %v", err)
 	}
 
 	res, err := resource.New(ctx,
@@ -143,9 +240,23 @@ func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 		}
 	})
 
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(10*time.Millisecond))),
+		sdkmetric.WithResource(res),
+	)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := mp.Shutdown(ctx); err != nil {
+			t.Logf("Failed to shutdown meter provider: %v", err)
+		}
+	})
+
 	return &observabilityFixture{
-		grpcServer:  grpcServer,
-		traceServer: traceServer,
-		provider:    tp,
+		grpcServer:    grpcServer,
+		traceServer:   traceServer,
+		metricServer:  metricServer,
+		provider:      tp,
+		meterProvider: mp,
 	}
 }

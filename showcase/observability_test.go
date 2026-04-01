@@ -6,17 +6,23 @@ import (
 	"testing"
 	"time"
 
+	"cloud.google.com/go/auth"
 	"github.com/google/go-cmp/cmp"
 	showcase "github.com/googleapis/gapic-showcase/client"
 	gax "github.com/googleapis/gax-go/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
-	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 )
+
+type dummyTokenProvider struct{}
+
+func (d dummyTokenProvider) Token(ctx context.Context) (*auth.Token, error) {
+	return &auth.Token{Value: "dummy-token"}, nil
+}
 
 func setupTracingTest(t *testing.T, enableTracing bool) (*observabilityFixture, []option.ClientOption) {
 	// Reset feature cache just in case something else evaluated it
@@ -38,7 +44,9 @@ func setupTracingTest(t *testing.T, enableTracing bool) (*observabilityFixture, 
 	// Create a new client to ensure it picks up the OTel provider and env vars
 	grpcClientOpts := []option.ClientOption{
 		option.WithEndpoint("127.0.0.1:7469"),
-		option.WithTokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "dummy-token"})),
+		option.WithAuthCredentials(auth.NewCredentials(&auth.CredentialsOptions{
+			TokenProvider: dummyTokenProvider{},
+		})),
 		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
 	}
 
