@@ -3,13 +3,13 @@ module showcase
 go 1.25.0
 
 require (
-	cloud.google.com/go v0.123.0
-	cloud.google.com/go/auth v0.19.1-0.20260401232718-a70f04f1789a
+	cloud.google.com/go v0.123.1-0.20260402180421-7c968bcb0723
+	cloud.google.com/go/auth v0.19.1-0.20260402180421-7c968bcb0723
 	cloud.google.com/go/iam v1.5.3
 	cloud.google.com/go/trace v1.11.7
 	github.com/google/go-cmp v0.7.0
 	github.com/googleapis/gapic-showcase v0.38.0
-	github.com/googleapis/gax-go/v2 v2.20.1-0.20260331160450-a2a329e31d8e
+	github.com/googleapis/gax-go/v2 v2.21.0
 	go.opentelemetry.io/contrib/bridges/otelslog v0.17.0
 	go.opentelemetry.io/contrib/detectors/gcp v1.42.0
 	go.opentelemetry.io/otel v1.42.0
@@ -23,7 +23,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.42.0
 	go.opentelemetry.io/proto/otlp v1.10.0
 	golang.org/x/oauth2 v0.36.0
-	google.golang.org/api v0.272.0
+	google.golang.org/api v0.273.1
 	google.golang.org/genproto v0.0.0-20260319201613-d00831a3d3e7
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260401001100-f93e5f3e9f0f
 	google.golang.org/grpc v1.79.3
@@ -31,7 +31,7 @@ require (
 )
 
 require (
-	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
+	cloud.google.com/go/auth/oauth2adapt v0.2.9-0.20260402180421-7c968bcb0723 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/longrunning v0.8.0 // indirect
 	github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp v1.31.0 // indirect
