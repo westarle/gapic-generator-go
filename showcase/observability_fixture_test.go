@@ -8,12 +8,16 @@ import (
 	"time"
 
 	"go.opentelemetry.io/contrib/detectors/gcp"
+	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetricgrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/sdk/resource"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.26.0"
+	pblog "go.opentelemetry.io/proto/otlp/collector/logs/v1"
+	olog "go.opentelemetry.io/proto/otlp/logs/v1"
 	pbmetric "go.opentelemetry.io/proto/otlp/collector/metrics/v1"
 	pb "go.opentelemetry.io/proto/otlp/collector/trace/v1"
 	v1common "go.opentelemetry.io/proto/otlp/common/v1"
@@ -168,12 +172,81 @@ func (s *mockMetricServer) GetCapturedMetrics() []CapturedMetric {
 	return metrics
 }
 
+type mockLogServer struct {
+	pblog.UnimplementedLogsServiceServer
+	mu       sync.Mutex
+	requests []*pblog.ExportLogsServiceRequest
+}
+
+func (s *mockLogServer) Export(ctx context.Context, req *pblog.ExportLogsServiceRequest) (*pblog.ExportLogsServiceResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.requests = append(s.requests, req)
+	return &pblog.ExportLogsServiceResponse{}, nil
+}
+
+type CapturedLog struct {
+	Body       string
+	Scope      string
+	Severity   olog.SeverityNumber
+	TraceID    []byte
+	Attributes map[string]any
+}
+
+func (s *mockLogServer) getRequests() []*pblog.ExportLogsServiceRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reqs := make([]*pblog.ExportLogsServiceRequest, len(s.requests))
+	copy(reqs, s.requests)
+	return reqs
+}
+
+func (s *mockLogServer) GetCapturedLogs() []CapturedLog {
+	reqs := s.getRequests()
+	var logs []CapturedLog
+	for _, req := range reqs {
+		for _, rl := range req.ResourceLogs {
+			for _, sl := range rl.ScopeLogs {
+				for _, l := range sl.LogRecords {
+					cl := CapturedLog{
+						Scope:    sl.Scope.Name,
+						Severity: l.SeverityNumber,
+						TraceID:  l.TraceId,
+					}
+					if l.Body != nil {
+						cl.Body = l.Body.GetStringValue()
+					}
+
+					attrs := make(map[string]any)
+					for _, kv := range l.Attributes {
+						if kv.Value != nil {
+							switch v := kv.Value.Value.(type) {
+							case *v1common.AnyValue_StringValue:
+								attrs[kv.Key] = v.StringValue
+							case *v1common.AnyValue_IntValue:
+								attrs[kv.Key] = v.IntValue
+							case *v1common.AnyValue_BoolValue:
+								attrs[kv.Key] = v.BoolValue
+							}
+						}
+					}
+					cl.Attributes = attrs
+					logs = append(logs, cl)
+				}
+			}
+		}
+	}
+	return logs
+}
+
 type observabilityFixture struct {
-	grpcServer    *grpc.Server
-	traceServer   *mockTraceServer
-	metricServer  *mockMetricServer
-	provider      *sdktrace.TracerProvider
-	meterProvider *sdkmetric.MeterProvider
+	grpcServer     *grpc.Server
+	traceServer    *mockTraceServer
+	metricServer   *mockMetricServer
+	logServer      *mockLogServer
+	provider       *sdktrace.TracerProvider
+	meterProvider  *sdkmetric.MeterProvider
+	loggerProvider *sdklog.LoggerProvider
 }
 
 // setupObservabilityFixture creates an in-memory OTLP trace server and configures the OTel SDK to export to it.
@@ -188,8 +261,10 @@ func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 	grpcServer := grpc.NewServer()
 	traceServer := &mockTraceServer{}
 	metricServer := &mockMetricServer{}
+	logServer := &mockLogServer{}
 	pb.RegisterTraceServiceServer(grpcServer, traceServer)
 	pbmetric.RegisterMetricsServiceServer(grpcServer, metricServer)
+	pblog.RegisterLogsServiceServer(grpcServer, logServer)
 
 	go func() {
 		if err := grpcServer.Serve(lis); err != nil {
@@ -217,6 +292,14 @@ func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 		t.Fatalf("failed to create metric exporter: %v", err)
 	}
 
+	logExp, err := otlploggrpc.New(ctx,
+		otlploggrpc.WithEndpoint(lis.Addr().String()),
+		otlploggrpc.WithInsecure(),
+	)
+	if err != nil {
+		t.Fatalf("failed to create log exporter: %v", err)
+	}
+
 	res, err := resource.New(ctx,
 		resource.WithDetectors(gcp.NewDetector()),
 		resource.WithTelemetrySDK(),
@@ -232,31 +315,38 @@ func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 		sdktrace.WithBatcher(exp),
 		sdktrace.WithResource(res),
 	)
+
+	mp := sdkmetric.NewMeterProvider(
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(10*time.Millisecond))),
+		sdkmetric.WithResource(res),
+	)
+
+	lp := sdklog.NewLoggerProvider(
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(logExp)),
+		sdklog.WithResource(res),
+	)
+
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := tp.Shutdown(ctx); err != nil {
 			t.Logf("Failed to shutdown tracer provider: %v", err)
 		}
-	})
-
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(10*time.Millisecond))),
-		sdkmetric.WithResource(res),
-	)
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
 		if err := mp.Shutdown(ctx); err != nil {
 			t.Logf("Failed to shutdown meter provider: %v", err)
+		}
+		if err := lp.Shutdown(ctx); err != nil {
+			t.Logf("Failed to shutdown logger provider: %v", err)
 		}
 	})
 
 	return &observabilityFixture{
-		grpcServer:    grpcServer,
-		traceServer:   traceServer,
-		metricServer:  metricServer,
-		provider:      tp,
-		meterProvider: mp,
+		grpcServer:     grpcServer,
+		traceServer:    traceServer,
+		metricServer:   metricServer,
+		logServer:      logServer,
+		provider:       tp,
+		meterProvider:  mp,
+		loggerProvider: lp,
 	}
 }
