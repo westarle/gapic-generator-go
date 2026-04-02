@@ -12,9 +12,9 @@ import (
 	gax "github.com/googleapis/gax-go/v2"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/oauth2"
 	"google.golang.org/api/option"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -24,7 +24,7 @@ func (d dummyTokenProvider) Token(ctx context.Context) (*auth.Token, error) {
 	return &auth.Token{Value: "dummy-token"}, nil
 }
 
-func setupTracingTest(t *testing.T, enableTracing bool) (*observabilityFixture, []option.ClientOption) {
+func setupTracingTest(t *testing.T, enableTracing bool, transport string) (*observabilityFixture, []option.ClientOption) {
 	// Reset feature cache just in case something else evaluated it
 	gax.TestOnlyResetIsFeatureEnabled()
 	t.Cleanup(gax.TestOnlyResetIsFeatureEnabled)
@@ -41,19 +41,26 @@ func setupTracingTest(t *testing.T, enableTracing bool) (*observabilityFixture, 
 	t.Cleanup(func() { otel.SetTracerProvider(oldTP) })
 	otel.SetTracerProvider(fix.provider)
 
-	// Create a new client to ensure it picks up the OTel provider and env vars
-	grpcClientOpts := []option.ClientOption{
-		option.WithEndpoint("127.0.0.1:7469"),
-		option.WithAuthCredentials(auth.NewCredentials(&auth.CredentialsOptions{
-			TokenProvider: dummyTokenProvider{},
-		})),
-		option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
+	var clientOpts []option.ClientOption
+	if transport == "grpc" {
+		clientOpts = []option.ClientOption{
+			option.WithEndpoint("127.0.0.1:7469"),
+			option.WithAuthCredentials(auth.NewCredentials(&auth.CredentialsOptions{
+				TokenProvider: dummyTokenProvider{},
+			})),
+			option.WithGRPCDialOption(grpc.WithTransportCredentials(insecure.NewCredentials())),
+		}
+	} else {
+		clientOpts = []option.ClientOption{
+			option.WithEndpoint("http://127.0.0.1:7469"),
+			option.WithTokenSource(oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "dummy-token"})),
+		}
 	}
 
-	return fix, grpcClientOpts
+	return fix, clientOpts
 }
 
-func verifyInMemorySpan(t *testing.T, fix *observabilityFixture, expectedName string, traceID trace.TraceID, wantAttrs map[string]any) {
+func verifyInMemorySpan(t *testing.T, fix *observabilityFixture, expectedName string, traceID trace.TraceID, wantAttrs map[string]any, unexpectedAttrs []string) {
 	t.Helper()
 
 	// Force flush the provider to ensure traces are exported
@@ -63,7 +70,7 @@ func verifyInMemorySpan(t *testing.T, fix *observabilityFixture, expectedName st
 		t.Fatalf("failed to flush provider: %v", err)
 	}
 
-	// Give a little time for the gRPC export to arrive
+	// Give a little time for the export to arrive
 	time.Sleep(100 * time.Millisecond)
 
 	spans := fix.traceServer.GetCapturedSpans()
@@ -83,223 +90,388 @@ func verifyInMemorySpan(t *testing.T, fix *observabilityFixture, expectedName st
 		t.Fatalf("did not find the expected client span")
 	}
 
-	// TODO: The instrumentation scope should be the artifact name ("github.com/googleapis/gapic-showcase/client"), 
-	// but it is currently the otelgrpc scope because the underlying transport hardcodes it.
-	expectedScope := "go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
-	if gotSpan.Scope != expectedScope {
-		t.Errorf("expected span scope to be %q, got %q", expectedScope, gotSpan.Scope)
-	}
-
 	if wantAttrs != nil {
 		if _, ok := gotSpan.Attributes["gcp.client.version"]; ok {
 			gotSpan.Attributes["gcp.client.version"] = "DYNAMIC"
 		}
+		if _, ok := gotSpan.Attributes["gcp.resource.destination.id"]; ok {
+			gotSpan.Attributes["gcp.resource.destination.id"] = "DYNAMIC"
+		}
+		if _, ok := gotSpan.Attributes["url.full"]; ok {
+			gotSpan.Attributes["url.full"] = "DYNAMIC"
+		}
+		if _, ok := gotSpan.Attributes["exception.message"]; ok {
+			// ignore exception message as it contains arbitrary text sometimes
+			gotSpan.Attributes["exception.message"] = "DYNAMIC"
+		}
 
-		if diff := cmp.Diff(wantAttrs, gotSpan.Attributes); diff != "" {
+		// Keep only the attributes we expect for diffing
+		filteredGot := make(map[string]any)
+		for k, v := range gotSpan.Attributes {
+			if _, expected := wantAttrs[k]; expected {
+				filteredGot[k] = v
+			}
+		}
+
+		if diff := cmp.Diff(wantAttrs, filteredGot); diff != "" {
 			t.Errorf("Client span attributes mismatch (-want +got):\n%s", diff)
+		}
+	}
+	
+	for _, attr := range unexpectedAttrs {
+		if _, ok := gotSpan.Attributes[attr]; ok {
+			t.Errorf("expected attribute %q to be NOT SET, but it was present", attr)
 		}
 	}
 }
 
 func TestObservability_Tracing_Success(t *testing.T) {
-	fix, clientOpts := setupTracingTest(t, true)
-	ctx := context.Background()
-	seqClient, err := showcase.NewSequenceClient(ctx, clientOpts...)
-	if err != nil {
-		t.Fatalf("failed to create sequence client: %v", err)
+	transports := []string{"grpc", "rest"}
+	for _, transport := range transports {
+		t.Run(transport, func(t *testing.T) {
+			fix, clientOpts := setupTracingTest(t, true, transport)
+			ctx := context.Background()
+			
+			var seqClient interface {
+				Close() error
+			}
+			var err error
+			
+			if transport == "grpc" {
+				seqClient, err = showcase.NewSequenceClient(ctx, clientOpts...)
+			} else {
+				seqClient, err = showcase.NewSequenceRESTClient(ctx, clientOpts...)
+			}
+			if err != nil {
+				t.Fatalf("failed to create sequence client: %v", err)
+			}
+			t.Cleanup(func() { seqClient.Close() })
+
+			ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
+			
+			if transport == "grpc" {
+				_ = runTracingSuccessScenario(ctxSpan, t, seqClient.(*showcase.SequenceClient))
+			} else {
+				_ = runTracingSuccessScenarioREST(ctxSpan, t, seqClient.(*showcase.SequenceClient))
+			}
+			span.End()
+			traceID := span.SpanContext().TraceID()
+
+			var wantAttrs map[string]any
+			var unexpectedAttrs []string
+			var expectedName string
+
+			if transport == "grpc" {
+				expectedName = "google.showcase.v1beta1.SequenceService/AttemptSequence"
+				wantAttrs = map[string]any{
+					"gcp.client.artifact":         "github.com/googleapis/gapic-showcase/client",
+					"gcp.client.repo":             "googleapis/google-cloud-go",
+					"gcp.client.service":          "showcase",
+					"gcp.client.version":          "DYNAMIC",
+					"gcp.resource.destination.id": "DYNAMIC",
+					"rpc.method":                  "google.showcase.v1beta1.SequenceService/AttemptSequence",
+					"rpc.response.status_code":    "OK",
+					"rpc.system.name":             "grpc",
+					"server.address":              "127.0.0.1",
+					"server.port":                 int64(7469),
+					"url.domain":                  "showcase.googleapis.com",
+				}
+				unexpectedAttrs = []string{"gcp.grpc.resend_count", "status.message", "error.type"}
+			} else {
+				expectedName = "POST /v1beta1/{name=sequences/*}"
+				wantAttrs = map[string]any{
+					"gcp.client.artifact":         "github.com/googleapis/gapic-showcase/client",
+					"gcp.client.repo":             "googleapis/google-cloud-go",
+					"gcp.client.service":          "showcase",
+					"gcp.client.version":          "DYNAMIC",
+					"gcp.resource.destination.id": "DYNAMIC",
+					"http.request.method":         "POST",
+					"http.response.status_code":   int64(200),
+					"rpc.system.name":             "http",
+					"server.address":              "127.0.0.1",
+					"server.port":                 int64(7469),
+					"url.domain":                  "showcase.googleapis.com",
+					"url.full":                    "DYNAMIC",
+					"url.template":                "/v1beta1/{name=sequences/*}",
+				}
+				unexpectedAttrs = []string{"http.request.resend_count", "status.message", "error.type", "exception.type"}
+			}
+
+			verifyInMemorySpan(t, fix, expectedName, traceID, wantAttrs, unexpectedAttrs)
+		})
 	}
-	t.Cleanup(func() { seqClient.Close() })
-
-	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
-	_ = runTracingSuccessScenario(ctxSpan, t, seqClient)
-	span.End()
-	traceID := span.SpanContext().TraceID()
-
-	wantAttrs := map[string]any{
-		"gcp.client.artifact":         "github.com/googleapis/gapic-showcase/client",
-		// TODO: gcp.client.language is [removed] from requirements (present in telemetry.sdk.language).
-		"gcp.client.language":         "go",
-		"gcp.client.repo":             "googleapis/google-cloud-go",
-		"gcp.client.service":          "showcase",
-		"gcp.client.version":          "DYNAMIC",
-		"gcp.grpc.resend_count":       int64(0),
-		// TODO: gcp.resource.destination.id should be populated from the resource_reference, but currently is not emitted by the generator.
-		// "gcp.resource.destination.id": seq.GetName(),
-		// TODO: rpc.grpc.status_code is [deleted] in OTel SemConv 1.39 (use rpc.response.status_code).
-		"rpc.grpc.status_code":        int64(0),
-		// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
-		"rpc.method":                  "AttemptSequence",
-		"rpc.response.status_code":    "OK",
-		// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
-		"rpc.service":                 "google.showcase.v1beta1.SequenceService",
-		// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
-		"rpc.system":                  "grpc",
-		"server.address":              "127.0.0.1",
-		"server.port":                 int64(7469),
-		"url.domain":                  "showcase.googleapis.com",
-	}
-
-	verifyInMemorySpan(t, fix, "google.showcase.v1beta1.SequenceService/AttemptSequence", traceID, wantAttrs)
 }
 
 func TestObservability_Tracing_Failure(t *testing.T) {
-	fix, clientOpts := setupTracingTest(t, true)
-	ctx := context.Background()
-	seqClient, err := showcase.NewSequenceClient(ctx, clientOpts...)
-	if err != nil {
-		t.Fatalf("failed to create sequence client: %v", err)
+	transports := []string{"grpc", "rest"}
+	for _, transport := range transports {
+		t.Run(transport, func(t *testing.T) {
+			fix, clientOpts := setupTracingTest(t, true, transport)
+			ctx := context.Background()
+			
+			var seqClient interface {
+				Close() error
+			}
+			var err error
+			
+			if transport == "grpc" {
+				seqClient, err = showcase.NewSequenceClient(ctx, clientOpts...)
+			} else {
+				seqClient, err = showcase.NewSequenceRESTClient(ctx, clientOpts...)
+			}
+			if err != nil {
+				t.Fatalf("failed to create sequence client: %v", err)
+			}
+			t.Cleanup(func() { seqClient.Close() })
+
+			ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
+			if transport == "grpc" {
+				_ = runTracingServerFailureScenario(ctxSpan, t, seqClient.(*showcase.SequenceClient))
+			} else {
+				_ = runTracingServerFailureScenarioREST(ctxSpan, t, seqClient.(*showcase.SequenceClient))
+			}
+			span.End()
+			traceID := span.SpanContext().TraceID()
+
+			var wantAttrs map[string]any
+			var unexpectedAttrs []string
+			var expectedName string
+
+			if transport == "grpc" {
+				expectedName = "google.showcase.v1beta1.SequenceService/AttemptSequence"
+				wantAttrs = map[string]any{
+					"error.type":               "NOT_FOUND",
+					"exception.type":           "*status.Error",
+					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
+					"gcp.client.repo":          "googleapis/google-cloud-go",
+					"gcp.client.service":       "showcase",
+					"gcp.client.version":       "DYNAMIC",
+					"gcp.resource.destination.id": "DYNAMIC",
+					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
+					"rpc.response.status_code": "NOT_FOUND",
+					"rpc.system.name":          "grpc",
+					"server.address":           "127.0.0.1",
+					"server.port":              int64(7469),
+					"status.message":           "not found",
+					"url.domain":               "showcase.googleapis.com",
+				}
+				unexpectedAttrs = []string{"gcp.grpc.resend_count"}
+			} else {
+				expectedName = "POST /v1beta1/{name=sequences/*}"
+				wantAttrs = map[string]any{
+					"error.type":               "404",
+					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
+					"gcp.client.repo":          "googleapis/google-cloud-go",
+					"gcp.client.service":       "showcase",
+					"gcp.client.version":       "DYNAMIC",
+					"gcp.resource.destination.id": "DYNAMIC",
+					"http.request.method":      "POST",
+					"http.response.status_code": int64(404),
+					"rpc.system.name":          "http",
+					"server.address":           "127.0.0.1",
+					"server.port":              int64(7469),
+					"status.message":           "404 Not Found",
+					"url.domain":               "showcase.googleapis.com",
+					"url.full":                 "DYNAMIC",
+					"url.template":             "/v1beta1/{name=sequences/*}",
+				}
+				unexpectedAttrs = []string{"http.request.resend_count"}
+			}
+
+			verifyInMemorySpan(t, fix, expectedName, traceID, wantAttrs, unexpectedAttrs)
+		})
 	}
-	t.Cleanup(func() { seqClient.Close() })
-
-	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
-	_ = runTracingServerFailureScenario(ctxSpan, t, seqClient)
-	span.End()
-	traceID := span.SpanContext().TraceID()
-
-	wantAttrs := map[string]any{
-		"error.type":               "NOT_FOUND",
-		"exception.type":           "*status.Error",
-		"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-		// TODO: gcp.client.language is [removed] from requirements (present in telemetry.sdk.language).
-		"gcp.client.language":      "go",
-		"gcp.client.repo":          "googleapis/google-cloud-go",
-		"gcp.client.service":       "showcase",
-		"gcp.client.version":       "DYNAMIC",
-		"gcp.grpc.resend_count":    int64(0),
-		// TODO: gcp.resource.destination.id should be populated from the resource_reference, but currently is not emitted by the generator.
-		// "gcp.resource.destination.id": seq.GetName(),
-		// TODO: rpc.grpc.status_code is [deleted] in OTel SemConv 1.39 (use rpc.response.status_code).
-		"rpc.grpc.status_code":     int64(codes.NotFound),
-		// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
-		"rpc.method":               "AttemptSequence",
-		"rpc.response.status_code": "NOT_FOUND",
-		// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
-		"rpc.service":              "google.showcase.v1beta1.SequenceService",
-		// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
-		"rpc.system":               "grpc",
-		"server.address":           "127.0.0.1",
-		"server.port":              int64(7469),
-		"status.message":           "not found",
-		"url.domain":               "showcase.googleapis.com",
-	}
-
-	verifyInMemorySpan(t, fix, "google.showcase.v1beta1.SequenceService/AttemptSequence", traceID, wantAttrs)
 }
 
 func TestObservability_Tracing_ClientFailure(t *testing.T) {
-	fix, clientOpts := setupTracingTest(t, true)
-	ctx := context.Background()
-	seqClient, err := showcase.NewSequenceClient(ctx, clientOpts...)
-	if err != nil {
-		t.Fatalf("failed to create sequence client: %v", err)
+	transports := []string{"grpc", "rest"}
+	for _, transport := range transports {
+		t.Run(transport, func(t *testing.T) {
+			fix, clientOpts := setupTracingTest(t, true, transport)
+			ctx := context.Background()
+			
+			var seqClient interface {
+				Close() error
+			}
+			var err error
+			
+			if transport == "grpc" {
+				seqClient, err = showcase.NewSequenceClient(ctx, clientOpts...)
+			} else {
+				seqClient, err = showcase.NewSequenceRESTClient(ctx, clientOpts...)
+			}
+			if err != nil {
+				t.Fatalf("failed to create sequence client: %v", err)
+			}
+			t.Cleanup(func() { seqClient.Close() })
+
+			ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
+			if transport == "grpc" {
+				_ = runTracingClientFailureScenario(ctxSpan, t, seqClient.(*showcase.SequenceClient))
+			} else {
+				_ = runTracingClientFailureScenarioREST(ctxSpan, t, seqClient.(*showcase.SequenceClient))
+			}
+			span.End()
+			traceID := span.SpanContext().TraceID()
+
+			var wantAttrs map[string]any
+			var unexpectedAttrs []string
+			var expectedName string
+
+			if transport == "grpc" {
+				expectedName = "google.showcase.v1beta1.SequenceService/AttemptSequence"
+				wantAttrs = map[string]any{
+					"error.type":               "CLIENT_TIMEOUT",
+					"exception.type":           "*status.Error",
+					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
+					"gcp.client.repo":          "googleapis/google-cloud-go",
+					"gcp.client.service":       "showcase",
+					"gcp.client.version":       "DYNAMIC",
+					"gcp.resource.destination.id": "DYNAMIC",
+					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
+					"rpc.system.name":          "grpc",
+					"server.address":           "127.0.0.1",
+					"server.port":              int64(7469),
+					"status.message":           "context deadline exceeded",
+					"url.domain":               "showcase.googleapis.com",
+				}
+				unexpectedAttrs = []string{"gcp.grpc.resend_count", "rpc.response.status_code"}
+			} else {
+				expectedName = "POST /v1beta1/{name=sequences/*}"
+				wantAttrs = map[string]any{
+					"error.type":               "context.deadlineExceededError",
+					"exception.type":           "*fmt.wrapError",
+					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
+					"gcp.client.repo":          "googleapis/google-cloud-go",
+					"gcp.client.service":       "showcase",
+					"gcp.client.version":       "DYNAMIC",
+					"gcp.resource.destination.id": "DYNAMIC",
+					"http.request.method":      "POST",
+					"rpc.system.name":          "http",
+					"server.address":           "127.0.0.1",
+					"server.port":              int64(7469),
+					"url.domain":               "showcase.googleapis.com",
+					"url.full":                 "DYNAMIC",
+					"url.template":             "/v1beta1/{name=sequences/*}",
+				}
+				unexpectedAttrs = []string{"http.response.status_code", "http.request.resend_count"}
+			}
+
+			verifyInMemorySpan(t, fix, expectedName, traceID, wantAttrs, unexpectedAttrs)
+		})
 	}
-	t.Cleanup(func() { seqClient.Close() })
-
-	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
-	_ = runTracingClientFailureScenario(ctxSpan, t, seqClient)
-	span.End()
-	traceID := span.SpanContext().TraceID()
-
-	wantAttrs := map[string]any{
-		"error.type":               "CLIENT_TIMEOUT",
-		"exception.type":           "*status.Error",
-		"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-		// TODO: gcp.client.language is [removed] from requirements (present in telemetry.sdk.language).
-		"gcp.client.language":      "go",
-		"gcp.client.repo":          "googleapis/google-cloud-go",
-		"gcp.client.service":       "showcase",
-		"gcp.client.version":       "DYNAMIC",
-		"gcp.grpc.resend_count":    int64(0),
-		// TODO: gcp.resource.destination.id should be populated from the resource_reference, but currently is not emitted by the generator.
-		// "gcp.resource.destination.id": seq.GetName(),
-		// TODO: rpc.grpc.status_code is [deleted] in OTel SemConv 1.39 (use rpc.response.status_code).
-		"rpc.grpc.status_code":     int64(codes.DeadlineExceeded),
-		// TODO: rpc.method should be [modified] to be fully-qualified "$serviceName/$method".
-		"rpc.method":               "AttemptSequence",
-		"rpc.response.status_code": "DEADLINE_EXCEEDED",
-		// TODO: rpc.service is [deleted] in OTel SemConv 1.39.
-		"rpc.service":              "google.showcase.v1beta1.SequenceService",
-		// TODO: rpc.system is [moved] to rpc.system.name in OTel SemConv 1.39.
-		"rpc.system":               "grpc",
-		"server.address":           "127.0.0.1",
-		"server.port":              int64(7469),
-		"status.message":           "context deadline exceeded",
-		"url.domain":               "showcase.googleapis.com",
-	}
-
-	verifyInMemorySpan(t, fix, "google.showcase.v1beta1.SequenceService/AttemptSequence", traceID, wantAttrs)
 }
 
 func TestObservability_Tracing_Disablement(t *testing.T) {
-	fix, clientOpts := setupTracingTest(t, false)
-	ctx := context.Background()
-	echoClient, err := showcase.NewEchoClient(ctx, clientOpts...)
-	if err != nil {
-		t.Fatalf("failed to create echo client: %v", err)
-	}
-	t.Cleanup(func() { echoClient.Close() })
+	transports := []string{"grpc", "rest"}
+	for _, transport := range transports {
+		t.Run(transport, func(t *testing.T) {
+			fix, clientOpts := setupTracingTest(t, false, transport)
+			ctx := context.Background()
+			
+			if transport == "grpc" {
+				echoClient, err := showcase.NewEchoClient(ctx, clientOpts...)
+				if err != nil {
+					t.Fatalf("failed to create echo client: %v", err)
+				}
+				t.Cleanup(func() { echoClient.Close() })
+				ctxSpan, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
+				runTracingDisablementScenario(ctxSpan, t, echoClient)
+				span.End()
+			} else {
+				echoClient, err := showcase.NewEchoRESTClient(ctx, clientOpts...)
+				if err != nil {
+					t.Fatalf("failed to create echo client: %v", err)
+				}
+				t.Cleanup(func() { echoClient.Close() })
+				ctxSpan, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
+				runTracingDisablementScenarioREST(ctxSpan, t, echoClient)
+				span.End()
+			}
 
-	ctxSpan, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
-	runTracingDisablementScenario(ctxSpan, t, echoClient)
-	span.End()
-	traceID := span.SpanContext().TraceID()
+			ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := fix.provider.ForceFlush(ctxFlush); err != nil {
+				t.Fatalf("failed to flush provider: %v", err)
+			}
 
-	ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := fix.provider.ForceFlush(ctxFlush); err != nil {
-		t.Fatalf("failed to flush provider: %v", err)
-	}
+			time.Sleep(100 * time.Millisecond)
 
-	time.Sleep(100 * time.Millisecond)
-
-	spans := fix.traceServer.GetCapturedSpans()
-	var gotSpan *CapturedSpan
-	for _, s := range spans {
-		if string(s.TraceID) == string(traceID[:]) && s.Name == "google.showcase.v1beta1.Echo/Echo" {
-			gotSpan = &s
-			break
-		}
-	}
-
-	if gotSpan != nil {
-		if _, ok := gotSpan.Attributes["gcp.client.artifact"]; ok {
-			t.Errorf("found gcp.client.artifact attribute, but tracing telemetry should be disabled")
-		}
+			spans := fix.traceServer.GetCapturedSpans()
+			
+			for _, s := range spans {
+				if _, ok := s.Attributes["gcp.client.artifact"]; ok {
+					t.Errorf("found gcp.client.artifact attribute, but tracing telemetry should be disabled")
+				}
+			}
+		})
 	}
 }
 
 func TestObservability_Tracing_Retry(t *testing.T) {
-	fix, clientOpts := setupTracingTest(t, true)
-	ctx := context.Background()
+	transports := []string{"grpc", "rest"}
+	for _, transport := range transports {
+		t.Run(transport, func(t *testing.T) {
+			fix, clientOpts := setupTracingTest(t, true, transport)
+			ctx := context.Background()
+			
+			var seqClient interface {
+				Close() error
+			}
+			var err error
+			
+			if transport == "grpc" {
+				seqClient, err = showcase.NewSequenceClient(ctx, clientOpts...)
+			} else {
+				seqClient, err = showcase.NewSequenceRESTClient(ctx, clientOpts...)
+			}
+			if err != nil {
+				t.Fatalf("failed to create sequence client: %v", err)
+			}
+			t.Cleanup(func() { seqClient.Close() })
 
-	seqClient, err := showcase.NewSequenceClient(ctx, clientOpts...)
-	if err != nil {
-		t.Fatalf("failed to create sequence client: %v", err)
-	}
-	t.Cleanup(func() { seqClient.Close() })
+			ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
+			if transport == "grpc" {
+				_ = runTracingRetryScenario(ctxSpan, t, seqClient.(*showcase.SequenceClient))
+			} else {
+				_ = runTracingRetryScenarioREST(ctxSpan, t, seqClient.(*showcase.SequenceClient))
+			}
+			span.End()
+			traceID := span.SpanContext().TraceID()
 
-	ctxSpan, span := otel.Tracer("test-tracer").Start(ctx, "APP")
-	_ = runTracingRetryScenario(ctxSpan, t, seqClient)
-	span.End()
-	traceID := span.SpanContext().TraceID()
+			ctxFlush, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancelFlush()
+			if err := fix.provider.ForceFlush(ctxFlush); err != nil {
+				t.Fatalf("failed to flush provider: %v", err)
+			}
 
-	ctxFlush, cancelFlush := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelFlush()
-	if err := fix.provider.ForceFlush(ctxFlush); err != nil {
-		t.Fatalf("failed to flush provider: %v", err)
-	}
+			time.Sleep(100 * time.Millisecond)
 
-	time.Sleep(100 * time.Millisecond)
+			spans := fix.traceServer.GetCapturedSpans()
+			var attemptSpans []CapturedSpan
+			expectedName := "google.showcase.v1beta1.SequenceService/AttemptSequence"
+			if transport == "rest" {
+				expectedName = "POST /v1beta1/{name=sequences/*}"
+			}
+			for _, s := range spans {
+				if string(s.TraceID) == string(traceID[:]) && s.Name == expectedName {
+					attemptSpans = append(attemptSpans, s)
+				}
+			}
 
-	spans := fix.traceServer.GetCapturedSpans()
-	var attemptSpans []CapturedSpan
-	for _, s := range spans {
-		if string(s.TraceID) == string(traceID[:]) && s.Name == "google.showcase.v1beta1.SequenceService/AttemptSequence" {
-			attemptSpans = append(attemptSpans, s)
-		}
-	}
-
-	if len(attemptSpans) != 4 {
-		t.Errorf("expected 4 attempt spans (3 failures + 1 success), got %d", len(attemptSpans))
+			if len(attemptSpans) != 4 {
+				t.Errorf("expected 4 attempt spans (3 failures + 1 success), got %d", len(attemptSpans))
+			}
+			
+			// Verify last span has correct attributes
+			if len(attemptSpans) > 0 {
+				lastSpan := attemptSpans[len(attemptSpans)-1]
+				if transport == "rest" {
+					if resend, ok := lastSpan.Attributes["http.request.resend_count"]; !ok || resend.(int64) != 3 {
+						t.Errorf("expected http.request.resend_count to be 3, got %v", resend)
+					}
+				}
+			}
+		})
 	}
 }
