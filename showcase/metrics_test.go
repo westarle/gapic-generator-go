@@ -210,6 +210,7 @@ func TestObservability_Metrics_Success(t *testing.T) {
 					"gcp.client.service":       "showcase",
 					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
 					"rpc.system.name":          "http",
+					"rpc.response.status_code": "OK",
 					"server.address":           "127.0.0.1",
 					"server.port":              int64(7469),
 					"url.domain":               "showcase.googleapis.com",
@@ -274,6 +275,7 @@ func TestObservability_Metrics_Failure(t *testing.T) {
 					"gcp.client.service":       "showcase",
 					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
 					"rpc.system.name":          "http",
+					"rpc.response.status_code": "NOT_FOUND",
 					"server.address":           "127.0.0.1",
 					"server.port":              int64(7469),
 					"url.domain":               "showcase.googleapis.com",
@@ -322,7 +324,7 @@ func TestObservability_Metrics_ClientFailure(t *testing.T) {
 				expectedMethod = "google.showcase.v1beta1.SequenceService/AttemptSequence"
 				wantAttrs = map[string]any{
 					"error.type":          "CLIENT_TIMEOUT",
-					"gcp.client.service":  "showcase",
+					"gcp.client.service":       "showcase",
 					"rpc.method":          "google.showcase.v1beta1.SequenceService/AttemptSequence",
 					"rpc.system.name":     "grpc",
 					"server.address":      "127.0.0.1",
@@ -334,7 +336,7 @@ func TestObservability_Metrics_ClientFailure(t *testing.T) {
 				expectedMethod = "google.showcase.v1beta1.SequenceService/AttemptSequence"
 				wantAttrs = map[string]any{
 					"error.type":          "CLIENT_TIMEOUT",
-					"gcp.client.service":  "showcase",
+					"gcp.client.service":       "showcase",
 					"rpc.method":          "google.showcase.v1beta1.SequenceService/AttemptSequence",
 					"rpc.system.name":     "http",
 					"server.address":      "127.0.0.1",
