@@ -466,6 +466,10 @@ func TestObservability_Tracing_Retry(t *testing.T) {
 					if resend, ok := lastSpan.Attributes["http.request.resend_count"]; !ok || resend.(int64) != 3 {
 						t.Errorf("expected http.request.resend_count to be 3, got %v", resend)
 					}
+				} else if transport == "grpc" {
+					if resend, ok := lastSpan.Attributes["gcp.grpc.resend_count"]; !ok || resend.(int64) != 3 {
+						t.Errorf("expected gcp.grpc.resend_count to be 3, got %v", resend)
+					}
 				}
 			}
 		})
