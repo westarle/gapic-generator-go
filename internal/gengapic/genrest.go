@@ -1073,6 +1073,8 @@ func (g *generator) emptyUnaryRESTCall(servName string, m *descriptorpb.MethodDe
 	g.insertRequestHeaders(m, rest)
 	g.injectTelemetryContext(m, info)
 
+	g.appendCallOpts(m)
+
 	p("return gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {")
 	p(`  if settings.Path != "" {`)
 	p("    baseUrl.Path = settings.Path")

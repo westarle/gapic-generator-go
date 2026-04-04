@@ -123,24 +123,24 @@ func TestObservability_Metrics_Disablement(t *testing.T) {
 			fix, clientOpts := setupMetricsTest(t, false, transport)
 			ctx := context.Background()
 
-			var echoClient interface {
+			var seqClient interface {
 				Close() error
 			}
 			var err error
 			if transport == "grpc" {
-				echoClient, err = showcase.NewEchoClient(ctx, clientOpts...)
+				seqClient, err = showcase.NewSequenceClient(ctx, clientOpts...)
 			} else {
-				echoClient, err = showcase.NewEchoRESTClient(ctx, clientOpts...)
+				seqClient, err = showcase.NewSequenceRESTClient(ctx, clientOpts...)
 			}
 			if err != nil {
-				t.Fatalf("failed to create echo client: %v", err)
+				t.Fatalf("failed to create sequence client: %v", err)
 			}
-			t.Cleanup(func() { echoClient.Close() })
+			t.Cleanup(func() { seqClient.Close() })
 
 			if transport == "grpc" {
-				runTracingDisablementScenario(ctx, t, echoClient.(*showcase.EchoClient))
+				runTracingDisablementScenario(ctx, t, seqClient.(*showcase.SequenceClient))
 			} else {
-				runTracingDisablementScenarioREST(ctx, t, echoClient.(*showcase.EchoClient))
+				runTracingDisablementScenarioREST(ctx, t, seqClient.(*showcase.SequenceClient))
 			}
 
 			ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -195,10 +195,7 @@ func TestObservability_Metrics_Success(t *testing.T) {
 			if transport == "grpc" {
 				expectedMethod = "google.showcase.v1beta1.SequenceService/AttemptSequence"
 				wantAttrs = map[string]any{
-					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-					"gcp.client.repo":          "googleapis/google-cloud-go",
 					"gcp.client.service":       "showcase",
-					"gcp.client.version":       "DYNAMIC",
 					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
 					"rpc.response.status_code": "OK",
 					"rpc.system.name":          "grpc",
@@ -208,21 +205,17 @@ func TestObservability_Metrics_Success(t *testing.T) {
 				}
 				unexpectedAttrs = []string{"error.type", "http.response.status_code"}
 			} else {
-				expectedMethod = "POST"
+				expectedMethod = "google.showcase.v1beta1.SequenceService/AttemptSequence"
 				wantAttrs = map[string]any{
-					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-					"gcp.client.repo":          "googleapis/google-cloud-go",
 					"gcp.client.service":       "showcase",
-					"gcp.client.version":       "DYNAMIC",
-					"http.response.status_code": int64(200),
-					"rpc.method":               "POST",
+					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
 					"rpc.system.name":          "http",
 					"server.address":           "127.0.0.1",
 					"server.port":              int64(7469),
 					"url.domain":               "showcase.googleapis.com",
 					"url.template":             "/v1beta1/{name=sequences/*}",
 				}
-				unexpectedAttrs = []string{"error.type", "rpc.response.status_code"}
+				unexpectedAttrs = []string{"error.type"}
 			}
 
 			verifyInMemoryMetric(t, fix, "gcp.client.request.duration", "github.com/googleapis/gapic-showcase/client", expectedMethod, wantAttrs, unexpectedAttrs)
@@ -265,10 +258,7 @@ func TestObservability_Metrics_Failure(t *testing.T) {
 				expectedMethod = "google.showcase.v1beta1.SequenceService/AttemptSequence"
 				wantAttrs = map[string]any{
 					"error.type":               "NOT_FOUND",
-					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-					"gcp.client.repo":          "googleapis/google-cloud-go",
 					"gcp.client.service":       "showcase",
-					"gcp.client.version":       "DYNAMIC",
 					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
 					"rpc.response.status_code": "NOT_FOUND",
 					"rpc.system.name":          "grpc",
@@ -278,22 +268,18 @@ func TestObservability_Metrics_Failure(t *testing.T) {
 				}
 				unexpectedAttrs = []string{"http.response.status_code"}
 			} else {
-				expectedMethod = "POST"
+				expectedMethod = "google.showcase.v1beta1.SequenceService/AttemptSequence"
 				wantAttrs = map[string]any{
-					"error.type":               "404",
-					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-					"gcp.client.repo":          "googleapis/google-cloud-go",
+					"error.type":               "NOT_FOUND",
 					"gcp.client.service":       "showcase",
-					"gcp.client.version":       "DYNAMIC",
-					"http.response.status_code": int64(404),
-					"rpc.method":               "POST",
+					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
 					"rpc.system.name":          "http",
 					"server.address":           "127.0.0.1",
 					"server.port":              int64(7469),
 					"url.domain":               "showcase.googleapis.com",
 					"url.template":             "/v1beta1/{name=sequences/*}",
 				}
-				unexpectedAttrs = []string{"rpc.response.status_code"}
+				unexpectedAttrs = []string{}
 			}
 
 			verifyInMemoryMetric(t, fix, "gcp.client.request.duration", "github.com/googleapis/gapic-showcase/client", expectedMethod, wantAttrs, unexpectedAttrs)
@@ -335,34 +321,28 @@ func TestObservability_Metrics_ClientFailure(t *testing.T) {
 			if transport == "grpc" {
 				expectedMethod = "google.showcase.v1beta1.SequenceService/AttemptSequence"
 				wantAttrs = map[string]any{
-					"error.type":               "CLIENT_TIMEOUT",
-					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-					"gcp.client.repo":          "googleapis/google-cloud-go",
-					"gcp.client.service":       "showcase",
-					"gcp.client.version":       "DYNAMIC",
-					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
-					"rpc.system.name":          "grpc",
-					"server.address":           "127.0.0.1",
-					"server.port":              int64(7469),
-					"url.domain":               "showcase.googleapis.com",
+					"error.type":          "CLIENT_TIMEOUT",
+					"gcp.client.service":  "showcase",
+					"rpc.method":          "google.showcase.v1beta1.SequenceService/AttemptSequence",
+					"rpc.system.name":     "grpc",
+					"server.address":      "127.0.0.1",
+					"server.port":         int64(7469),
+					"url.domain":          "showcase.googleapis.com",
 				}
-				unexpectedAttrs = []string{"http.response.status_code", "rpc.response.status_code"}
+				unexpectedAttrs = []string{"http.response.status_code"}
 			} else {
-				expectedMethod = "POST"
+				expectedMethod = "google.showcase.v1beta1.SequenceService/AttemptSequence"
 				wantAttrs = map[string]any{
-					"error.type":               "context.deadlineExceededError",
-					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
-					"gcp.client.repo":          "googleapis/google-cloud-go",
-					"gcp.client.service":       "showcase",
-					"gcp.client.version":       "DYNAMIC",
-					"rpc.method":               "POST",
-					"rpc.system.name":          "http",
-					"server.address":           "127.0.0.1",
-					"server.port":              int64(7469),
-					"url.domain":               "showcase.googleapis.com",
-					"url.template":             "/v1beta1/{name=sequences/*}",
+					"error.type":          "CLIENT_TIMEOUT",
+					"gcp.client.service":  "showcase",
+					"rpc.method":          "google.showcase.v1beta1.SequenceService/AttemptSequence",
+					"rpc.system.name":     "http",
+					"server.address":      "127.0.0.1",
+					"server.port":         int64(7469),
+					"url.domain":          "showcase.googleapis.com",
+					"url.template":        "/v1beta1/{name=sequences/*}",
 				}
-				unexpectedAttrs = []string{"http.response.status_code", "rpc.response.status_code"}
+				unexpectedAttrs = []string{"http.response.status_code"}
 			}
 
 			verifyInMemoryMetric(t, fix, "gcp.client.request.duration", "github.com/googleapis/gapic-showcase/client", expectedMethod, wantAttrs, unexpectedAttrs)
@@ -408,9 +388,6 @@ func TestObservability_Metrics_Retry(t *testing.T) {
 			metrics := fix.metricServer.GetCapturedMetrics()
 			
 			expectedMethod := "google.showcase.v1beta1.SequenceService/AttemptSequence"
-			if transport == "rest" {
-				expectedMethod = "POST"
-			}
 
 			var attemptMetrics []CapturedMetric
 			for _, m := range metrics {

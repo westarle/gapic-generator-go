@@ -25,7 +25,7 @@ func runTracingSuccessScenario(ctx context.Context, t *testing.T, seqClient *sho
 		t.Fatalf("CreateSequence failed: %v", err)
 	}
 
-	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
+	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, seqClient.CallOptions.AttemptSequence...)
 	if err != nil {
 		t.Fatalf("AttemptSequence RPC failed: %v", err)
 	}
@@ -44,7 +44,7 @@ func runTracingServerFailureScenario(ctx context.Context, t *testing.T, seqClien
 		t.Fatalf("CreateSequence failed: %v", err)
 	}
 
-	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
+	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, seqClient.CallOptions.AttemptSequence...)
 	if err == nil {
 		t.Fatalf("Expected error, got nil")
 	}
@@ -71,7 +71,7 @@ func runTracingClientFailureScenario(ctx context.Context, t *testing.T, seqClien
 	timeoutCtx, cancelTimeout := context.WithTimeout(ctxSpan, 1*time.Millisecond)
 	defer cancelTimeout()
 
-	err = seqClient.AttemptSequence(timeoutCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
+	err = seqClient.AttemptSequence(timeoutCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, seqClient.CallOptions.AttemptSequence...)
 	if err == nil {
 		t.Fatalf("Expected error, got nil")
 	}
@@ -109,7 +109,8 @@ func runTracingRetryScenario(ctx context.Context, t *testing.T, seqClient *showc
 		return gax.OnCodes([]codes.Code{codes.Unavailable}, bo)
 	})
 
-	err = seqClient.AttemptSequence(retryCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, retryOpt)
+	opts := append(seqClient.CallOptions.AttemptSequence, retryOpt)
+	err = seqClient.AttemptSequence(retryCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, opts...)
 	if err != nil {
 		t.Fatalf("AttemptSequence failed: %v", err)
 	}
@@ -118,14 +119,20 @@ func runTracingRetryScenario(ctx context.Context, t *testing.T, seqClient *showc
 	return seq
 }
 
-func runTracingDisablementScenario(ctx context.Context, t *testing.T, echoClient *showcase.EchoClient) {
-	_, err := echoClient.Echo(ctx, &showcasepb.EchoRequest{
-		Response: &showcasepb.EchoRequest_Content{
-			Content: "hello",
-		},
+func runTracingDisablementScenario(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) {
+	responses := []*showcasepb.Sequence_Response{
+		{Status: status.New(codes.OK, "OK").Proto()},
+	}
+	seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
+		Sequence: &showcasepb.Sequence{Responses: responses},
 	})
 	if err != nil {
-		t.Fatalf("Echo RPC failed: %v", err)
+		t.Fatalf("CreateSequence failed: %v", err)
+	}
+
+	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, seqClient.CallOptions.AttemptSequence...)
+	if err != nil {
+		t.Fatalf("AttemptSequence RPC failed: %v", err)
 	}
 }
 func runTracingSuccessScenarioREST(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) *showcasepb.Sequence {
@@ -139,7 +146,7 @@ func runTracingSuccessScenarioREST(ctx context.Context, t *testing.T, seqClient 
 		t.Fatalf("CreateSequence failed: %v", err)
 	}
 
-	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
+	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, seqClient.CallOptions.AttemptSequence...)
 	if err != nil {
 		t.Fatalf("AttemptSequence RPC failed: %v", err)
 	}
@@ -158,7 +165,7 @@ func runTracingServerFailureScenarioREST(ctx context.Context, t *testing.T, seqC
 		t.Fatalf("CreateSequence failed: %v", err)
 	}
 
-	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
+	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, seqClient.CallOptions.AttemptSequence...)
 	if err == nil {
 		t.Fatalf("Expected error, got nil")
 	}
@@ -185,7 +192,7 @@ func runTracingClientFailureScenarioREST(ctx context.Context, t *testing.T, seqC
 	timeoutCtx, cancelTimeout := context.WithTimeout(ctxSpan, 1*time.Millisecond)
 	defer cancelTimeout()
 
-	err = seqClient.AttemptSequence(timeoutCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()})
+	err = seqClient.AttemptSequence(timeoutCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, seqClient.CallOptions.AttemptSequence...)
 	if err == nil {
 		t.Fatalf("Expected error, got nil")
 	}
@@ -223,7 +230,8 @@ func runTracingRetryScenarioREST(ctx context.Context, t *testing.T, seqClient *s
 		return gax.OnCodes([]codes.Code{codes.Unavailable}, bo)
 	})
 
-	err = seqClient.AttemptSequence(retryCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, retryOpt)
+	opts := append(seqClient.CallOptions.AttemptSequence, retryOpt)
+	err = seqClient.AttemptSequence(retryCtx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, opts...)
 	if err != nil {
 		t.Fatalf("AttemptSequence failed: %v", err)
 	}
@@ -232,13 +240,19 @@ func runTracingRetryScenarioREST(ctx context.Context, t *testing.T, seqClient *s
 	return seq
 }
 
-func runTracingDisablementScenarioREST(ctx context.Context, t *testing.T, echoClient *showcase.EchoClient) {
-	_, err := echoClient.Echo(ctx, &showcasepb.EchoRequest{
-		Response: &showcasepb.EchoRequest_Content{
-			Content: "hello",
-		},
+func runTracingDisablementScenarioREST(ctx context.Context, t *testing.T, seqClient *showcase.SequenceClient) {
+	responses := []*showcasepb.Sequence_Response{
+		{Status: status.New(codes.OK, "OK").Proto()},
+	}
+	seq, err := seqClient.CreateSequence(ctx, &showcasepb.CreateSequenceRequest{
+		Sequence: &showcasepb.Sequence{Responses: responses},
 	})
 	if err != nil {
-		t.Fatalf("Echo RPC failed: %v", err)
+		t.Fatalf("CreateSequence failed: %v", err)
+	}
+
+	err = seqClient.AttemptSequence(ctx, &showcasepb.AttemptSequenceRequest{Name: seq.GetName()}, seqClient.CallOptions.AttemptSequence...)
+	if err != nil {
+		t.Fatalf("AttemptSequence RPC failed: %v", err)
 	}
 }

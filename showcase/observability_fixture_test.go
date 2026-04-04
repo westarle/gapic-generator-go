@@ -317,7 +317,7 @@ func setupObservabilityFixture(t *testing.T) *observabilityFixture {
 	)
 
 	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(10*time.Millisecond))),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp, sdkmetric.WithInterval(10*time.Hour))),
 		sdkmetric.WithResource(res),
 	)
 

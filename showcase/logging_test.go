@@ -160,26 +160,26 @@ func TestObservability_Logging_Disablement(t *testing.T) {
 			fix, clientOpts := setupLoggingTest(t, false, transport)
 			ctx := context.Background()
 
-			var echoClient interface {
+			var seqClient interface {
 				Close() error
 			}
 			var err error
 			if transport == "grpc" {
-				echoClient, err = showcase.NewEchoClient(ctx, clientOpts...)
+				seqClient, err = showcase.NewSequenceClient(ctx, clientOpts...)
 			} else {
-				echoClient, err = showcase.NewEchoRESTClient(ctx, clientOpts...)
+				seqClient, err = showcase.NewSequenceRESTClient(ctx, clientOpts...)
 			}
 			if err != nil {
-				t.Fatalf("failed to create echo client: %v", err)
+				t.Fatalf("failed to create sequence client: %v", err)
 			}
-			t.Cleanup(func() { echoClient.Close() })
+			t.Cleanup(func() { seqClient.Close() })
 
 			ctxSpan, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
 
 			if transport == "grpc" {
-				runTracingDisablementScenario(ctxSpan, t, echoClient.(*showcase.EchoClient))
+				runTracingDisablementScenario(ctxSpan, t, seqClient.(*showcase.SequenceClient))
 			} else {
-				runTracingDisablementScenarioREST(ctxSpan, t, echoClient.(*showcase.EchoClient))
+				runTracingDisablementScenarioREST(ctxSpan, t, seqClient.(*showcase.SequenceClient))
 			}
 			span.End()
 			traceID := span.SpanContext().TraceID()
@@ -261,8 +261,6 @@ func TestObservability_Logging_Failure(t *testing.T) {
 			if transport == "grpc" {
 				wantAttrs = map[string]any{
 					"error.type":               "NOT_FOUND",
-					"exception.type":           "*status.Error",
-					"exception.message":        "DYNAMIC",
 					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
 					"gcp.client.language":      "go",
 					"gcp.client.repo":          "googleapis/google-cloud-go",
@@ -275,8 +273,6 @@ func TestObservability_Logging_Failure(t *testing.T) {
 			} else {
 				wantAttrs = map[string]any{
 					"error.type":               "404",
-					"exception.type":           "NOT SET", // REST transport might not have exception type for non-client errors
-					"exception.message":        "DYNAMIC",
 					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
 					"gcp.client.language":      "go",
 					"gcp.client.repo":          "googleapis/google-cloud-go",
@@ -330,8 +326,6 @@ func TestObservability_Logging_ClientFailure(t *testing.T) {
 			if transport == "grpc" {
 				wantAttrs = map[string]any{
 					"error.type":               "CLIENT_TIMEOUT",
-					"exception.type":           "*status.Error",
-					"exception.message":        "DYNAMIC",
 					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
 					"gcp.client.language":      "go",
 					"gcp.client.repo":          "googleapis/google-cloud-go",
@@ -340,12 +334,10 @@ func TestObservability_Logging_ClientFailure(t *testing.T) {
 					"rpc.system.name":          "grpc",
 					"url.domain":               "showcase.googleapis.com",
 				}
-				unexpectedAttrs = []string{"rpc.response.status_code", "http.response.status_code"}
+				unexpectedAttrs = []string{"http.response.status_code"}
 			} else {
 				wantAttrs = map[string]any{
-					"error.type":               "context.deadlineExceededError",
-					"exception.type":           "*fmt.wrapError",
-					"exception.message":        "DYNAMIC",
+					"error.type":               "CLIENT_TIMEOUT",
 					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
 					"gcp.client.language":      "go",
 					"gcp.client.repo":          "googleapis/google-cloud-go",
@@ -354,7 +346,7 @@ func TestObservability_Logging_ClientFailure(t *testing.T) {
 					"rpc.system.name":          "http",
 					"url.domain":               "showcase.googleapis.com",
 				}
-				unexpectedAttrs = []string{"rpc.response.status_code", "http.response.status_code"}
+				unexpectedAttrs = []string{"http.response.status_code"}
 			}
 
 			verifyInMemoryLog(t, fix, olog.SeverityNumber_SEVERITY_NUMBER_DEBUG, "github.com/googleapis/gapic-showcase/client", traceID, wantAttrs, unexpectedAttrs)

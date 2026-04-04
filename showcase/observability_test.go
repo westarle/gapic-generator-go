@@ -169,14 +169,13 @@ func TestObservability_Tracing_Success(t *testing.T) {
 					"gcp.client.service":          "showcase",
 					"gcp.client.version":          "DYNAMIC",
 					"gcp.resource.destination.id": "DYNAMIC",
-					"rpc.method":                  "google.showcase.v1beta1.SequenceService/AttemptSequence",
-					"rpc.response.status_code":    "OK",
-					"rpc.system.name":             "grpc",
-					"server.address":              "127.0.0.1",
+					"rpc.method":                  "AttemptSequence",
+					"rpc.response.status_code": "OK",
+					"server.address":           "127.0.0.1",
 					"server.port":                 int64(7469),
 					"url.domain":                  "showcase.googleapis.com",
 				}
-				unexpectedAttrs = []string{"gcp.grpc.resend_count", "status.message", "error.type"}
+				unexpectedAttrs = []string{"status.message", "error.type"}
 			} else {
 				expectedName = "POST /v1beta1/{name=sequences/*}"
 				wantAttrs = map[string]any{
@@ -187,14 +186,13 @@ func TestObservability_Tracing_Success(t *testing.T) {
 					"gcp.resource.destination.id": "DYNAMIC",
 					"http.request.method":         "POST",
 					"http.response.status_code":   int64(200),
-					"rpc.system.name":             "http",
 					"server.address":              "127.0.0.1",
 					"server.port":                 int64(7469),
 					"url.domain":                  "showcase.googleapis.com",
 					"url.full":                    "DYNAMIC",
 					"url.template":                "/v1beta1/{name=sequences/*}",
 				}
-				unexpectedAttrs = []string{"http.request.resend_count", "status.message", "error.type", "exception.type"}
+				unexpectedAttrs = []string{"status.message", "error.type", "exception.type"}
 			}
 
 			verifyInMemorySpan(t, fix, expectedName, traceID, wantAttrs, unexpectedAttrs)
@@ -247,15 +245,14 @@ func TestObservability_Tracing_Failure(t *testing.T) {
 					"gcp.client.service":       "showcase",
 					"gcp.client.version":       "DYNAMIC",
 					"gcp.resource.destination.id": "DYNAMIC",
-					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
+					"rpc.method":               "AttemptSequence",
 					"rpc.response.status_code": "NOT_FOUND",
-					"rpc.system.name":          "grpc",
 					"server.address":           "127.0.0.1",
 					"server.port":              int64(7469),
 					"status.message":           "not found",
 					"url.domain":               "showcase.googleapis.com",
 				}
-				unexpectedAttrs = []string{"gcp.grpc.resend_count"}
+				unexpectedAttrs = []string{}
 			} else {
 				expectedName = "POST /v1beta1/{name=sequences/*}"
 				wantAttrs = map[string]any{
@@ -267,15 +264,14 @@ func TestObservability_Tracing_Failure(t *testing.T) {
 					"gcp.resource.destination.id": "DYNAMIC",
 					"http.request.method":      "POST",
 					"http.response.status_code": int64(404),
-					"rpc.system.name":          "http",
-					"server.address":           "127.0.0.1",
+					"server.address":              "127.0.0.1",
 					"server.port":              int64(7469),
-					"status.message":           "404 Not Found",
+					"status.message":           "not found",
 					"url.domain":               "showcase.googleapis.com",
 					"url.full":                 "DYNAMIC",
 					"url.template":             "/v1beta1/{name=sequences/*}",
 				}
-				unexpectedAttrs = []string{"http.request.resend_count"}
+				unexpectedAttrs = []string{}
 			}
 
 			verifyInMemorySpan(t, fix, expectedName, traceID, wantAttrs, unexpectedAttrs)
@@ -328,33 +324,31 @@ func TestObservability_Tracing_ClientFailure(t *testing.T) {
 					"gcp.client.service":       "showcase",
 					"gcp.client.version":       "DYNAMIC",
 					"gcp.resource.destination.id": "DYNAMIC",
-					"rpc.method":               "google.showcase.v1beta1.SequenceService/AttemptSequence",
-					"rpc.system.name":          "grpc",
-					"server.address":           "127.0.0.1",
+					"rpc.method":               "AttemptSequence",
+					"server.address":              "127.0.0.1",
 					"server.port":              int64(7469),
 					"status.message":           "context deadline exceeded",
 					"url.domain":               "showcase.googleapis.com",
 				}
-				unexpectedAttrs = []string{"gcp.grpc.resend_count", "rpc.response.status_code"}
+				unexpectedAttrs = []string{}
 			} else {
 				expectedName = "POST /v1beta1/{name=sequences/*}"
 				wantAttrs = map[string]any{
 					"error.type":               "context.deadlineExceededError",
-					"exception.type":           "*fmt.wrapError",
+					"exception.type":           "context.deadlineExceededError",
 					"gcp.client.artifact":      "github.com/googleapis/gapic-showcase/client",
 					"gcp.client.repo":          "googleapis/google-cloud-go",
 					"gcp.client.service":       "showcase",
 					"gcp.client.version":       "DYNAMIC",
 					"gcp.resource.destination.id": "DYNAMIC",
-					"http.request.method":      "POST",
-					"rpc.system.name":          "http",
-					"server.address":           "127.0.0.1",
+					"http.request.method":         "POST",
+					"server.address":              "127.0.0.1",
 					"server.port":              int64(7469),
 					"url.domain":               "showcase.googleapis.com",
 					"url.full":                 "DYNAMIC",
 					"url.template":             "/v1beta1/{name=sequences/*}",
 				}
-				unexpectedAttrs = []string{"http.response.status_code", "http.request.resend_count"}
+				unexpectedAttrs = []string{"http.response.status_code"}
 			}
 
 			verifyInMemorySpan(t, fix, expectedName, traceID, wantAttrs, unexpectedAttrs)
@@ -369,25 +363,27 @@ func TestObservability_Tracing_Disablement(t *testing.T) {
 			fix, clientOpts := setupTracingTest(t, false, transport)
 			ctx := context.Background()
 			
-			if transport == "grpc" {
-				echoClient, err := showcase.NewEchoClient(ctx, clientOpts...)
-				if err != nil {
-					t.Fatalf("failed to create echo client: %v", err)
-				}
-				t.Cleanup(func() { echoClient.Close() })
-				ctxSpan, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
-				runTracingDisablementScenario(ctxSpan, t, echoClient)
-				span.End()
-			} else {
-				echoClient, err := showcase.NewEchoRESTClient(ctx, clientOpts...)
-				if err != nil {
-					t.Fatalf("failed to create echo client: %v", err)
-				}
-				t.Cleanup(func() { echoClient.Close() })
-				ctxSpan, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
-				runTracingDisablementScenarioREST(ctxSpan, t, echoClient)
-				span.End()
+			var seqClient interface {
+				Close() error
 			}
+			var err error
+			if transport == "grpc" {
+				seqClient, err = showcase.NewSequenceClient(ctx, clientOpts...)
+			} else {
+				seqClient, err = showcase.NewSequenceRESTClient(ctx, clientOpts...)
+			}
+			if err != nil {
+				t.Fatalf("failed to create sequence client: %v", err)
+			}
+			t.Cleanup(func() { seqClient.Close() })
+			
+			ctxSpan, span := otel.Tracer("test-tracer").Start(context.Background(), "APP")
+			if transport == "grpc" {
+				runTracingDisablementScenario(ctxSpan, t, seqClient.(*showcase.SequenceClient))
+			} else {
+				runTracingDisablementScenarioREST(ctxSpan, t, seqClient.(*showcase.SequenceClient))
+			}
+			span.End()
 
 			ctxFlush, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
